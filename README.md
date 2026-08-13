@@ -35,6 +35,7 @@ used for the two things a normal Linux host *cannot* do:
 
 ## Table of contents
 
+- [Demo](#demo)
 - [How it works](#how-it-works)
 - [Repository layout](#repository-layout)
 - [Setup](#setup)
@@ -43,6 +44,31 @@ used for the two things a normal Linux host *cannot* do:
 - [Applications](#applications)
 - [Limitations & honest notes](#limitations--honest-notes)
 - [License](#license)
+
+## Demo
+
+Real output captured from a Pico running this code, driven by
+`host/hsm_client.py` over `/dev/ttyACM0`:
+
+```
+=== PING ===
+PONG 13496
+
+=== WHO ===
+ID openhands-pico-hsm FINGERPRINT 6f48faaf0a32bda41564586ab2db7c1bbda3c5d287a472d05019cd70c05c1d18
+
+=== CHALLENGE (host-side random) ===
+challenge hex: 46eabae1d723b0947e97be2094fe048c0a4b983d8f77c4c4287fa7bce325bed8
+response: RESPONSE 882b4f3a1b378f1f96a2483a5b5ef2525cf60d2eb61de1f214d06f6458aaa8ec
+
+Got HMAC (32 bytes): 882b4f3a1b378f1f96a2483a5b5ef2525cf60d2eb61de1f214d06f6458aaa8ec
+deterministic (same challenge -> same HMAC)? True
+```
+
+The `WHO` fingerprint is `sha256(b'pico-hsm-v1:' + key)` — a stable identifier
+for this session's key that reveals nothing about the key itself. The same
+challenge yields the same HMAC within a session; power-cycle the board and you
+get a brand-new fingerprint and unrelated HMACs.
 
 ## How it works
 
