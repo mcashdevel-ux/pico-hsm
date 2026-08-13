@@ -80,6 +80,63 @@ main.py          # boot entry: import hsm
 hsm_client.py    # host-side demo client (pyserial)
 ```
 
+## Setup
+
+### Hardware
+
+- **Raspberry Pi Pico** (RP2040) — the original Pico or Pico H. A Pico W also
+  works; only the ADC is used.
+- **USB data cable** (many cheap cables are charge-only — if `/dev/ttyACM0`
+  never appears, suspect the cable first).
+- **GP26 left unconnected.** This pin (ADC channel 0) is the entropy source;
+  it must float. Do not wire it to anything, not even ground.
+
+### Flash MicroPython firmware
+
+The Pico ships with a blank flash. Install MicroPython once:
+
+1. Download the official RP2040 UF2 from
+   <https://micropython.org/download/RPI_PICO/> (use `RPI_PICO` for the
+   original Pico, or `RPI_PICO_W` for the Pico W).
+2. Hold **BOOTSEL** while plugging the board into USB. It mounts as a mass
+   storage drive (`RPI-RP2`).
+3. Copy the `.uf2` file onto that drive. The board reboots automatically and
+   the drive disappears — MicroPython is now running.
+
+### Host software
+
+```bash
+pip install mpremote pyserial
+```
+
+`mpremote` is the official MicroPython remote-control tool (file transfer,
+reset, REPL). `pyserial` is needed by `hsm_client.py`.
+
+### Verify the board
+
+```bash
+# should list Raspberry Pi (vendor 2e8a, product 0005)
+lsusb | grep 2e8a
+
+# the CDC serial device should appear
+ls /dev/ttyACM*
+```
+
+Confirm the firmware responds:
+
+```bash
+mpremote connect /dev/ttyACM0 version
+```
+
+Expected output similar to:
+```
+MicroPython v1.23.0 on 2024-06-02; Raspberry Pi Pico with RP2040
+```
+
+On Linux, if the serial port is not writable, add your user to the `dialout`
+group (`sudo usermod -aG dialout $USER`) and re-login, or just run the client
+with `sudo`.
+
 ## Reproduce
 
 ### On the Pico (MicroPython ≥ 1.20, RP2040)
