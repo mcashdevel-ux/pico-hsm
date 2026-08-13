@@ -18,18 +18,6 @@
 > use a persistent HSM or KMS instead. This device is an **ephemeral,
 > physical-presence** oracle, not a persistent key vault.
 
-
-> ⚠️ **WARNING — do not use this for reusable, long-lived secrets.** The HMAC
-> key is **volatile**: it is minted fresh on every boot and destroyed on
-> power-loss. Unplug the board and the key is gone forever — unrecoverable,
-> because it was random and never stored. The `WHO` fingerprint and the HMAC
-> key are **different every boot**. Anything you sealed with a previous boot's
-> key (an encrypted vault, a long-term token, a stored credential) **cannot be
-> decrypted or verified after a reboot.** This is by design. If you need a
-> reusable token or a key you can recover later, **do not use this project** —
-> use a persistent HSM or KMS instead. This device is an **ephemeral,
-> physical-presence** oracle, not a persistent key vault.
-
 > A **hardware True Random Number Generator (TRNG)** and a **physical-presence
 > HSM** on a Raspberry Pi Pico (RP2040), in under 200 lines of MicroPython.
 
