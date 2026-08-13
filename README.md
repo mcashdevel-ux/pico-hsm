@@ -19,6 +19,17 @@
 > physical-presence** oracle, not a persistent key vault.
 
 
+> ⚠️ **WARNING — do not use this for reusable, long-lived secrets.** The HMAC
+> key is **volatile**: it is minted fresh on every boot and destroyed on
+> power-loss. Unplug the board and the key is gone forever — unrecoverable,
+> because it was random and never stored. The `WHO` fingerprint and the HMAC
+> key are **different every boot**. Anything you sealed with a previous boot's
+> key (an encrypted vault, a long-term token, a stored credential) **cannot be
+> decrypted or verified after a reboot.** This is by design. If you need a
+> reusable token or a key you can recover later, **do not use this project** —
+> use a persistent HSM or KMS instead. This device is an **ephemeral,
+> physical-presence** oracle, not a persistent key vault.
+
 > A **hardware True Random Number Generator (TRNG)** and a **physical-presence
 > HSM** on a Raspberry Pi Pico (RP2040), in under 200 lines of MicroPython.
 
@@ -227,12 +238,16 @@ The core properties — true silicon entropy + a volatile key that demands
 physical presence — open up several use cases that a software-only solution
 cannot offer:
 
-- **Physical two-factor unseal for a secrets vault.** Store encrypted secrets
-  in any backend (a database, a file, a cloud KMS). To decrypt, the caller must
-  present a challenge to the Pico and receive a valid HMAC response; the HMAC
-  output (or a key derived from it) is the unseal key. Without the powered
-  board, the vault is inaccessible even if the host is fully compromised. This
-  is the canonical HSM use case scaled down to a $4 board.
+- **Physical two-factor unseal for a *session*.** Store encrypted secrets
+  in any backend (a database, a file, a cloud KMS). Within a powered session,
+  a caller presents a challenge to the Pico and receives a valid HMAC; the
+  HMAC output (or a key derived from it) is the unseal key. Without the powered
+  board the vault is inaccessible even if the host is fully compromised. This
+  is a **per-session** pattern: once the board is unplugged the session key is
+  gone, so you re-establish a fresh session next time rather than recovering
+  the old key. This is the canonical HSM use case scaled down to a $4 board —
+  but see the warning above; it does **not** give you a reusable, recoverable
+  unseal key.
 
 - **Tamper-evident audit logging / "dead man's switch".** A service commits a
   periodic `CHALLENGE`→`RESPONSE` pair to its audit log alongside the board's
@@ -267,6 +282,12 @@ cannot offer:
 
 ## Limitations & honest notes
 
+- **This is not a persistent key vault.** The HMAC key is minted fresh on every
+  boot and destroyed on power-loss; the fingerprint and key are different every
+  boot (see the warning at the top of this README). Anything sealed with a
+  previous boot's key cannot be decrypted or verified after a reboot. If you
+  need a reusable token or a recoverable long-term key, use a persistent HSM
+  or KMS — this device deliberately cannot provide that.
 - This is a **weak** TRNG by silicon-RNG standards — a single floating ADC pin
   is no substitute for a dedicated noise diode or a hardened TRNG IP. The
   min-entropy is measured and a safety margin is applied, but the output has
