@@ -113,6 +113,50 @@ record, including:
 - Three boots → three fingerprints (fresh volatile key per boot).
 - Determinism within a session (same challenge → same HMAC).
 
+## Applications
+
+The core properties — true silicon entropy + a volatile key that demands
+physical presence — open up several use cases that a software-only solution
+cannot offer:
+
+- **Physical two-factor unseal for a secrets vault.** Store encrypted secrets
+  in any backend (a database, a file, a cloud KMS). To decrypt, the caller must
+  present a challenge to the Pico and receive a valid HMAC response; the HMAC
+  output (or a key derived from it) is the unseal key. Without the powered
+  board, the vault is inaccessible even if the host is fully compromised. This
+  is the canonical HSM use case scaled down to a $4 board.
+
+- **Tamper-evident audit logging / "dead man's switch".** A service commits a
+  periodic `CHALLENGE`→`RESPONSE` pair to its audit log alongside the board's
+  `WHO` fingerprint. If the board is unplugged, the fingerprint changes on the
+  next boot and the log stream gains a verifiable discontinuity — a cheap
+  hardware attestation that the box was physically present and powered
+  throughout.
+
+- **Boot-time key derivation / seed entropy for a headless host.** A Raspberry
+  Pi or server with no hardware RNG can pull a fresh 256-bit seed from the Pico
+  at boot (`trng.key256()`) to seed its own CSPRNG or derive per-boot secrets.
+  The host gets true entropy it could not generate on its own.
+
+- **One-time / ephemeral session keys.** Because the key is destroyed on
+  power-loss and never persisted, the Pico can mint per-session HMAC keys for
+  short-lived tokens, API request signing, or challenge-handshake
+  authentication. Rotate the key by power-cycling the board — no key-management
+  ceremony required.
+
+- **"Proof you're holding it" interactive challenge.** A CI pipeline, a deploy
+  script, or a destructive operation can gate on a live `CHALLENGE`/
+  `RESPONSE` round-trip, forcing an operator to physically tap the Pico (e.g.
+  hold a button or just keep it plugged in) before a high-risk action proceeds.
+  This turns the board into a hardware confirmation prompt.
+
+- **Teaching / prototyping HSM concepts.** The whole stack — entropy
+  characterization, key minting, HMAC challenge/response, the physical-presence
+  security model — is under 200 lines of readable MicroPython. It is a good
+  starting point for learning how real HSMs and TEEs justify their threat
+  models, and for prototyping protocol ideas before committing to dedicated
+  hardware.
+
 ## Limitations & honest notes
 
 - This is a **weak** TRNG by silicon-RNG standards — a single floating ADC pin
