@@ -1,7 +1,14 @@
 # Test Results
 
-Reference board: Raspberry Pi Pico (RP2040), MicroPython v1.23.0, GP26 floating.
-Host: Linux, Python 3, pyserial. Date: 2026-08-13.
+| | |
+|---|---|
+| **Board** | Raspberry Pi Pico (RP2040) |
+| **Firmware** | MicroPython v1.23.0 |
+| **Entropy pin** | GP26 floating (ADC channel 0) |
+| **Host** | Linux, Python 3, pyserial |
+| **Date** | 2026-08-13 |
+
+---
 
 ## TRNG characterization
 

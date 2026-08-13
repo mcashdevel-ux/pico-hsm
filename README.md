@@ -19,23 +19,34 @@
 > physical-presence** oracle, not a persistent key vault.
 
 
-A **hardware True Random Number Generator (TRNG)** and a **physical-presence
-HSM** running on a Raspberry Pi Pico (RP2040) under MicroPython.
+> A **hardware True Random Number Generator (TRNG)** and a **physical-presence
+> HSM** on a Raspberry Pi Pico (RP2040), in under 200 lines of MicroPython.
 
 The RP2040 is not used as a compute offload (a host PC is ~100× faster). It is
 used for the two things a normal Linux host *cannot* do:
 
-1. **Produce true silicon entropy** — the host's `os.urandom()` is a software
+1. **Produce true silicon entropy.** The host's `os.urandom()` is a software
    PRNG seeded by entropy. The Pico harvests physical Johnson/thermal noise
-   from a floating ADC pin, measures the actual min-entropy, and condenses it
+   from a floating ADC pin, *measures* the actual min-entropy, and condenses it
    into 256-bit keys.
-2. **Enforce physical presence** — the HSM's HMAC key exists only in volatile
+2. **Enforce physical presence.** The HSM's HMAC key exists only in volatile
    RAM on the board. To produce a valid HMAC you must physically hold the
    powered Pico. Unplug it and the key is gone.
 
+## Table of contents
+
+- [How it works](#how-it-works)
+- [Repository layout](#repository-layout)
+- [Setup](#setup)
+- [Reproduce](#reproduce)
+- [Verified results](#verified-results)
+- [Applications](#applications)
+- [Limitations & honest notes](#limitations--honest-notes)
+- [License](#license)
+
 ## How it works
 
-### TRNG (`trng.py`)
+### TRNG — `pico/trng.py`
 
 - **Entropy source:** GP26 configured as a floating high-impedance ADC input
   (ADC channel 0). The unconnected pin picks up thermal/Johnson noise.
@@ -49,23 +60,23 @@ used for the two things a normal Linux host *cannot* do:
   `0x0` under this MicroPython config (no free-running ring oscillator); the
   internal temperature ADC (channel 4) low bits are stuck. Neither is used.
 
-### HSM (`hsm.py`)
+### HSM — `pico/hsm.py`
 
 - On boot, `trng.key256()` mints a **volatile HMAC key in RAM**. It is never
   written to flash and is destroyed on power-loss.
 - A line-based protocol is served over the USB CDC serial port:
 
-  | Command            | Response                                          |
-  |--------------------|---------------------------------------------------|
-  | `WHO`              | `ID openhands-pico-hsm FINGERPRINT <sha256(key)>` |
-  | `PING`             | `PONG <ticks_ms>`                                 |
-  | `CHALLENGE <hex>`  | `RESPONSE <hex HMAC-SHA256(key, challenge)>`      |
+  | Command           | Response                                          |
+  |-------------------|---------------------------------------------------|
+  | `WHO`             | `ID openhands-pico-hsm FINGERPRINT <sha256(key)>` |
+  | `PING`            | `PONG <ticks_ms>`                                 |
+  | `CHALLENGE <hex>` | `RESPONSE <hex HMAC-SHA256(key, challenge)>`      |
 
 - HMAC-SHA256 is implemented from scratch (RFC 2104) because MicroPython has no
   `hmac` module. It was verified **bit-exact** against the host's stdlib
   `hmac`.
 
-### Host client (`hsm_client.py`)
+### Host client — `host/hsm_client.py`
 
 A minimal `pyserial` client that opens the Pico's serial port, drains the boot
 banner, and exercises `PING`, `WHO`, and `CHALLENGE`. The host never sees the
@@ -73,11 +84,23 @@ key — only its fingerprint — which is the whole point.
 
 ## Repository layout
 
+Files are split by **where they run**: `pico/` for the board, `host/` for the
+controlling PC, `docs/` for reference material. When deployed to the Pico the
+files are flattened to its root (see [Reproduce](#reproduce)).
+
 ```
-trng.py          # hardware entropy harvester + 256-bit key generator (runs on Pico)
-hsm.py           # volatile HMAC-key HSM + serial protocol (runs on Pico)
-main.py          # boot entry: import hsm
-hsm_client.py    # host-side demo client (pyserial)
+pico-hsm/
+├── pico/              # runs ON the Pico (RP2040, MicroPython)
+│   ├── trng.py        # hardware entropy harvester + 256-bit key generator
+│   ├── hsm.py         # volatile HMAC-key HSM + serial protocol
+│   └── main.py        # boot entry: import hsm
+├── host/              # runs on the controlling PC (Python 3)
+│   └── hsm_client.py  # pyserial demo client
+├── docs/
+│   └── TEST_RESULTS.md
+├── README.md
+├── LICENSE
+└── .gitignore
 ```
 
 ## Setup
@@ -139,22 +162,24 @@ with `sudo`.
 
 ## Reproduce
 
-### On the Pico (MicroPython ≥ 1.20, RP2040)
+Assuming the [Setup](#setup) steps are done. From the repo root:
+
+### 1. Deploy the code to the Pico
 
 ```bash
-mpremote connect /dev/ttyACM0 cp trng.py :trng.py
-mpremote connect /dev/ttyACM0 cp hsm.py  :hsm.py
-mpremote connect /dev/ttyACM0 cp main.py :main.py
+mpremote connect /dev/ttyACM0 cp pico/trng.py :trng.py
+mpremote connect /dev/ttyACM0 cp pico/hsm.py  :hsm.py
+mpremote connect /dev/ttyACM0 cp pico/main.py :main.py
 mpremote connect /dev/ttyACM0 reset
 ```
 
-Leave **GP26 unconnected** so it floats.
+The files are flattened onto the Pico's root; `main.py` imports `hsm`, which
+imports `trng`. Leave **GP26 unconnected** so it floats.
 
-### On the host (Python 3 + pyserial)
+### 2. Run the host client
 
 ```bash
-pip install pyserial mpremote
-python3 hsm_client.py
+python3 host/hsm_client.py
 ```
 
 Expected: a `WHO` fingerprint, a 32-byte HMAC response to a random challenge,
@@ -163,8 +188,8 @@ session.
 
 ## Verified results
 
-See [`TEST_RESULTS.md`](TEST_RESULTS.md) for the full measurement and test
-record, including:
+See [`docs/TEST_RESULTS.md`](docs/TEST_RESULTS.md) for the full measurement and
+test record, including:
 
 - HMAC bit-exact match vs. Python stdlib `hmac`.
 - Three boots → three fingerprints (fresh volatile key per boot).
