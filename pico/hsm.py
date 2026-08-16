@@ -4,6 +4,9 @@ import trng, hashlib, ubinascii, time, sys
 # Key is NEVER written to flash; destroyed on power-loss.
 _KEY = trng.key256()
 
+_VERSION = 'pico-hsm/1.1.0'
+_COMMANDS = ('WHO', 'PING', 'CHALLENGE <hex>', 'SEED <n>', 'HELP', 'VERSION')
+
 def _hmac_sha256(key, msg):
     block = 64
     if len(key) > block:
@@ -19,6 +22,8 @@ def _fingerprint():
 
 def handle(line):
     line = line.strip()
+    if not line:
+        return ''
     if line.startswith('CHALLENGE '):
         hx = line[10:].strip()
         try:
@@ -27,19 +32,21 @@ def handle(line):
             return 'ERR bad-hex'
         mac = _hmac_sha256(_KEY, ch)
         return 'RESPONSE ' + ubinascii.hexlify(mac).decode()
+    if line.startswith('SEED '):
+        try:
+            n = int(line[5:].strip())
+        except Exception:
+            return 'ERR bad-count'
+        if n < 1 or n > 256:
+            return 'ERR count-range-1-256'
+        raw = trng.raw_entropy(n)
+        return 'SEED ' + ubinascii.hexlify(raw).decode()
     if line == 'WHO':
         return 'ID openhands-pico-hsm FINGERPRINT ' + _fingerprint()
     if line == 'PING':
         return 'PONG ' + str(time.ticks_ms())
+    if line == 'VERSION':
+        return 'VERSION ' + _VERSION + ' micropython-' + sys.version.split(';')[0].strip()
+    if line == 'HELP':
+        return 'COMMANDS ' + ' '.join(_COMMANDS)
     return 'ERR unknown-cmd'
-
-print('HSM ready. Commands: CHALLENGE <hex> | WHO | PING')
-print('ID openhands-pico-hsm FINGERPRINT ' + _fingerprint())
-try:
-    while True:
-        line = sys.stdin.readline()
-        if not line:
-            break
-        print(handle(line))
-except KeyboardInterrupt:
-    pass

@@ -34,3 +34,31 @@ def key256(margin=4):
     for _ in range(need):
         acc.append(_noisy(_raw16()))
     return hashlib.sha256(acc).digest()
+
+def raw_entropy(nbytes):
+    """Return *nbytes* of condensed raw entropy from the ADC noise source.
+
+    Collects noisy 6-bit samples (6 bits ≈ H_min ~3.73 bits each), condenses
+    via SHA-256 in 32-byte blocks, and returns the requested byte count.
+    Oversamples 4× to stay well above the information-theoretic bound.
+    """
+    _init()
+    hmin, _ = measure()
+    if hmin < 0.5:
+        hmin = 0.5
+    # bytes of entropy we can extract per 6-bit sample, with 4× safety margin
+    per_sample = hmin / 8.0
+    need = max(32, math.ceil(nbytes / per_sample) * 4)
+    acc = bytearray()
+    for _ in range(need):
+        acc.append(_noisy(_raw16()))
+    # SHA-256 condense in blocks, truncate to requested length
+    out = bytearray()
+    off = 0
+    while len(out) < nbytes:
+        chunk = acc[off:off + 64] if off + 64 <= len(acc) else acc[off:] + acc[:64 - (len(acc) - off)]
+        out.extend(hashlib.sha256(chunk).digest())
+        off += 64
+        if off >= len(acc):
+            off = 0
+    return bytes(out[:nbytes])
