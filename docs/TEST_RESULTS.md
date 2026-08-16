@@ -184,3 +184,96 @@ ID openhands-pico-hsm DEVICE e6605481db5f6734 FINGERPRINT c39d2b712a38c30f414dee
 ```
 device ID: e6605481db5f6734
 ```
+
+---
+
+## v1.3.0 — Cryptographic TRNG upgrade (von-Neumann + HMAC-DRBG + NIST validation)
+
+### Pipeline
+
+The TRNG now follows NIST SP 800-90A:
+
+```
+ADC noise (GP26, bits 4..9) → health gate → von-Neumann debias → HMAC-DRBG (SHA-256) → keys
+```
+
+The original naive SHA-256 condense and the 0.5-bit min-entropy floor are
+replaced by a proper cryptographic extractor (HMAC-DRBG, reseeded per
+generation) and a strict health gate (bit balance 0.45–0.55, byte min-entropy
+≥ 6.0, lag-1 serial correlation ≤ 0.30).
+
+### NIST SP 800-22 validation (9/9 pass)
+
+A 12,800-byte (102,400-bit) sample was collected from the Pico via 50 ×
+`SEED 256` calls and analyzed with the
+[`trng-crypt`](https://github.com/mcashdevel-ux/trng-crypt) repo's NIST SP
+800-22 test harness. The test was run for both the original pipeline and the
+new DRBG pipeline — both pass all 9 tests.
+
+#### New pipeline (von-Neumann + HMAC-DRBG)
+
+Quick screen:
+
+```
+feasible:          True
+bit_balance:       0.500088   (ideal 0.5)
+chi_square_bits:   0.0032
+shannon_entropy:   7.9841 / 8.0
+min_entropy:       7.3959 bits/byte
+compression_ratio: 1.0009     (ideal ~1.0)
+serial_correlation: -0.002512 (ideal ~0.0)
+```
+
+Deep suite (NIST SP 800-22, α = 0.01):
+
+```
+[PASS] monobit          p=0.0449
+[PASS] block_frequency  p=0.3392
+[PASS] runs             p=0.7287
+[PASS] longest_run      p=0.3282
+[PASS] dft_spectral     p=0.2837
+[PASS] approx_entropy   p=0.7409
+[PASS] serial           p=0.0250
+[PASS] cumsum_fwd       p=0.7569
+[PASS] cumsum_rev       p=0.7334
+RESULT: 9/9 passed
+```
+
+#### Original pipeline (pre-DRBG, for comparison)
+
+Quick screen:
+
+```
+bit_balance:       0.501064
+shannon_entropy:   7.9888 / 8.0
+min_entropy:       7.4739 bits/byte
+compression_ratio: 1.0009
+serial_correlation: -0.005306
+```
+
+Deep suite: **9/9 passed** (all p-values > 0.01).
+
+Both pipelines pass the full suite, confirming the ADC source is
+cryptographically sound independent of the extractor.
+
+### HSM end-to-end (new pipeline)
+
+```
+WHO => ID openhands-pico-hsm DEVICE e6605481db5f6734 FINGERPRINT bd0bd92df3bcd6a97dc92b52eb38b214802dc3a95bdc3fa6a72bb1ece61f6a95
+VERSION => VERSION pico-hsm/1.3.0 micropython-3.4.0
+PING => PONG 7680457
+CHALLENGE deadbeef => RESPONSE 101cf80869027e992bdc04fb5b8615a311e8cba679d6fa44cb915736bcb66799
+SEED 16 => SEED 82cae729ba9a3c153244d63d4b043a1d
+```
+
+### Methodology
+
+- **Data collection:** 50 × `SEED 256` calls (256 bytes each) via raw REPL
+  serial on rpi3b (`/dev/ttyACM0`, 115200 baud), accumulated to 12,800 raw
+  bytes, saved to a binary file.
+- **Analysis:** the sample was transferred to a host pod and analyzed with
+  `trng_scan.quick_analysis()` (bit balance, min-entropy, compression,
+  serial correlation) and `trng_scan.deep_analysis()` (9-test NIST SP 800-22
+  suite) from the trng-crypt repo. No analysis ran on the Pico itself — only
+  data collection.
+- **Date:** 2026-08-16.

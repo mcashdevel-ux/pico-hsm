@@ -9,7 +9,7 @@ _KEY = trng.key256()
 # substitution. It is NOT a secret (anyone with USB access can read it).
 _DEVICE_ID = ubinascii.hexlify(machine.unique_id()).decode()
 
-_VERSION = 'pico-hsm/1.2.0'
+_VERSION = 'pico-hsm/1.3.0'
 _COMMANDS = ('WHO', 'PING', 'CHALLENGE <hex>', 'SEED <n>', 'HELP', 'VERSION')
 
 def _hmac_sha256(key, msg):

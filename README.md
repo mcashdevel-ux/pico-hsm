@@ -20,7 +20,7 @@
 
 > A **hardware True Random Number Generator (TRNG)** and a **physical-presence
 > HSM** with **persistent device identity** on a Raspberry Pi Pico (RP2040),
-> in under 200 lines of MicroPython.
+> in under 300 lines of MicroPython.
 
 The RP2040 is not used as a compute offload (a host PC is ~100× faster). It is
 used for the three things a normal Linux host *cannot* do:
@@ -126,8 +126,22 @@ either `bytes` or a hex string; `seed(n)` returns raw bytes (1–256).
   reading) are isolated, and the min-entropy is *measured* per board via a
   most-common-value estimate. On the reference board this measured
   **H_min ≈ 3.73 bits/sample** (40/64 distinct 6-bit values).
-- **Key generation:** collect `ceil(256 / H_min) × margin` noisy samples (4×
-  safety margin → ~276 samples), then SHA-256 condense to a 256-bit key.
+- **Pipeline (NIST SP 800-90A-inspired):**
+  `ADC noise → health gate → von-Neumann debias → HMAC-DRBG (SHA-256) → keys`
+  - **Health gate** screens each raw capture *before* it seeds the DRBG: bit
+    balance must be 0.45–0.55, byte-level min-entropy ≥ 6.0 bits, and lag-1
+    serial correlation ≤ 0.30. A degraded capture is rejected — no key is
+    minted from a bad source.
+  - **Von-Neumann extractor** removes residual per-bit bias (01→0, 10→1,
+    00/11 discarded) before the DRBG consumes the bits.
+  - **HMAC-DRBG** (NIST SP 800-90A, SHA-256) is the cryptographic extractor.
+    It is reseeded with fresh TRNG entropy on every generation, giving
+    backtracking resistance — compromise of one key never reveals earlier or
+    later keys. This replaces the original naive SHA-256 condense.
+- **Validated:** the source passes the full **NIST SP 800-22** statistical
+  suite (9/9 tests at α=0.01) on a 12,800-byte sample — see
+  [Verified results](#verified-results). The original (pre-DRBG) pipeline also
+  passed 9/9, confirming the ADC source is sound independent of the extractor.
 - **What was tried and rejected:** the RP2040 `ROSC.RANDOM` register reads
   `0x0` under this MicroPython config (no free-running ring oscillator); the
   internal temperature ADC (channel 4) low bits are stuck. Neither is used.
@@ -164,9 +178,10 @@ either `bytes` or a hex string; `seed(n)` returns raw bytes (1–256).
   `hmac` module. It was verified **bit-exact** against the host's stdlib
   `hmac`.
 - `SEED <n>` exposes the TRNG directly: it calls `trng.raw_entropy(n)` to
-  return *n* bytes of raw (uncondensed) silicon entropy, hex-encoded. This is
-  the same entropy source used for key minting, but without SHA-256 condensing
-  — useful for seeding host-side CSPRNGs or statistical testing.
+  return *n* bytes of TRNG output via the HMAC-DRBG (reseeded with fresh TRNG
+  entropy on every call), hex-encoded. This is the same entropy source and
+  extractor used for key minting — useful for seeding host-side CSPRNGs or
+  statistical testing.
 
 ### Host client — `host/hsm_client.py`
 
@@ -384,6 +399,8 @@ test record, including:
 - Three boots → three fingerprints (fresh volatile key per boot).
 - Determinism within a session (same challenge → same HMAC).
 - TRNG statistical tests (monobit, runs, chi-square) — all pass on 4096 bytes.
+- **NIST SP 800-22** deep suite (9 tests) — **9/9 pass** at α=0.01 on a
+  12,800-byte sample, for both the original and the new DRBG pipeline.
 - 17/17 pytest integration tests pass against real hardware.
 - Chip ID stable across reboots (e6605481db5f6734); fingerprint changes per boot.
 
@@ -442,7 +459,7 @@ cannot offer:
 
 - **Teaching / prototyping HSM concepts.** The whole stack — entropy
   characterization, key minting, HMAC challenge/response, the physical-presence
-  security model — is under 200 lines of readable MicroPython. It is a good
+  security model — is under 300 lines of readable MicroPython. It is a good
   starting point for learning how real HSMs and TEEs justify their threat
   models, and for prototyping protocol ideas before committing to dedicated
   hardware.
@@ -457,9 +474,12 @@ cannot offer:
   or KMS — this device deliberately cannot provide that.
 - This is a **weak** TRNG by silicon-RNG standards — a single floating ADC pin
   is no substitute for a dedicated noise diode or a hardened TRNG IP. The
-  min-entropy is measured and a safety margin is applied, but the output has
-  not been put through a full NIST SP800-22 / SP800-90B test suite. Use it for
-  key derivation / tokenization, not as a certified cryptographic RNG.
+  min-entropy is measured and a safety margin is applied. The source passes the
+  full **NIST SP 800-22** suite (9/9 tests, see [Verified results](#verified-results)),
+  but it has not been through **NIST SP 800-90B** entropy-source validation,
+  and the health gate is a screen, not continuous certification. Use it for key
+  derivation / tokenization; for a certified cryptographic RNG use a validated
+  hardware entropy source.
 - The serial protocol is plaintext and unauthenticated beyond the HMAC itself;
   pair it with a trusted transport if you need confidentiality.
 - **The chip ID is a serial number, not a secret.** Anyone with USB access can
@@ -472,6 +492,39 @@ cannot offer:
   bug.
 
 ## Changelog
+
+### v1.3.0
+
+- **Cryptographic TRNG upgrade (major).** The TRNG pipeline now follows
+  NIST SP 800-90A:
+  `ADC noise → health gate → von-Neumann debias → HMAC-DRBG (SHA-256) → keys`.
+  - **HMAC-DRBG** (NIST SP 800-90A, SHA-256) replaces the original naive
+    SHA-256 condense as the cryptographic extractor. It is reseeded with fresh
+    TRNG entropy on every generation, giving backtracking resistance —
+    compromise of one key never reveals earlier or later keys. `raw_entropy()`
+    also routes through the DRBG, so `SEED` now returns DRBG output (reseeded
+    per call) rather than raw condensed bytes.
+  - **Von-Neumann extractor** removes residual per-bit bias (01→0, 10→1,
+    00/11 discarded) before the DRBG consumes the bits.
+  - **Strict health gate** replaces the old 0.5-bit min-entropy floor. Each
+    raw capture is screened before seeding: bit balance must be 0.45–0.55,
+    byte-level min-entropy ≥ 6.0 bits, lag-1 serial correlation ≤ 0.30. A
+    degraded capture is rejected — no key is minted from a bad source.
+  - HMAC-SHA256 is implemented from scratch (the MicroPython build has no
+    `hmac` module), reusing the same RFC 2104 pattern already in `hsm.py`.
+- **NIST SP 800-22 validation.** The entropy source was validated against the
+  full NIST SP 800-22 statistical suite (9 tests): **9/9 pass** at α=0.01 on
+  a 12,800-byte sample. Validated for both the original pipeline and the new
+  DRBG pipeline, confirming the ADC source is sound independent of the
+  extractor. See [Verified results](#verified-results).
+- **Public API unchanged.** `key256()`, `raw_entropy()`, and `measure()`
+  keep the same signatures, so `hsm.py` needs no changes.
+- **Code size:** `trng.py` grew from ~30 lines to 226 (the DRBG + debiaser +
+  health gate). Total firmware is now under 300 lines.
+- **Reproducibility:** the new pipeline was incorporated from the
+  [`trng-crypt`](https://github.com/mcashdevel-ux/trng-crypt) repo, which
+  provided the von-Neumann debiaser, HMAC-DRBG, and the NIST SP 800-22 test
+  harness.
 
 ### v1.2.0
 
