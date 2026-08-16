@@ -19,10 +19,11 @@
 > physical-presence** oracle, not a persistent key vault.
 
 > A **hardware True Random Number Generator (TRNG)** and a **physical-presence
-> HSM** on a Raspberry Pi Pico (RP2040), in under 200 lines of MicroPython.
+> HSM** with **persistent device identity** on a Raspberry Pi Pico (RP2040),
+> in under 200 lines of MicroPython.
 
 The RP2040 is not used as a compute offload (a host PC is ~100× faster). It is
-used for the two things a normal Linux host *cannot* do:
+used for the three things a normal Linux host *cannot* do:
 
 1. **Produce true silicon entropy.** The host's `os.urandom()` is a software
    PRNG seeded by entropy. The Pico harvests physical Johnson/thermal noise
@@ -31,6 +32,12 @@ used for the two things a normal Linux host *cannot* do:
 2. **Enforce physical presence.** The HSM's HMAC key exists only in volatile
    RAM on the board. To produce a valid HMAC you must physically hold the
    powered Pico. Unplug it and the key is gone.
+3. **Provide persistent device identity.** Every RP2040 has a factory-
+   programmed 64-bit chip ID that survives reboots and reflashes. The `WHO`
+   command exposes it, so the host can verify it is talking to **the same
+   physical board** it was provisioned with — not an impostor running the same
+   open-source firmware. (See [Device identity](#device-identity) for what this
+   does and does not protect against.)
 
 ## Table of contents
 
@@ -129,10 +136,15 @@ either `bytes` or a hex string; `seed(n)` returns raw bytes (1–256).
 
 - On boot, `trng.key256()` mints a **volatile HMAC key in RAM**. It is never
   written to flash and is destroyed on power-loss.
-- `hsm.py` is a pure library: it defines `handle(line)` and the key, but does
-  not run a REPL loop. `main.py` is the entry point that prints the boot banner
-  and serves the serial protocol. This separation lets `hsm` be imported for
-  testing without blocking.
+- At the same time, the RP2040's factory chip ID (`machine.unique_id()`) is
+  read and stored as a **persistent device identifier**. Unlike the key, it
+  survives reboots and reflashes — it is burned into silicon at manufacturing
+  time. This gives the host a way to distinguish *this specific board* from
+  any other board running the same firmware (see [Device identity](#device-identity)).
+- `hsm.py` is a pure library: it defines `handle(line)`, the key, and the
+  device ID, but does not run a REPL loop. `main.py` is the entry point that
+  prints the boot banner and serves the serial protocol. This separation lets
+  `hsm` be imported for testing without blocking.
 - A line-based protocol is served over the USB CDC serial port:
 
   | Command           | Response                                          |
@@ -232,7 +244,7 @@ pico-hsm/
 │   └── trng_stats.py  # TRNG statistical test suite (monobit/runs/chi-square)
 ├── tests/             # pytest integration tests (skip if no board)
 │   ├── conftest.py    # session-scoped PicoHSM fixture + skip logic
-│   └── test_hsm.py    # 16 tests across 7 command classes
+│   └── test_hsm.py    # 17 tests across 7 command classes
 ├── docs/
 │   └── TEST_RESULTS.md
 ├── pytest.ini
@@ -353,10 +365,11 @@ The repo includes a pytest integration suite in `tests/`:
 python3 -m pytest -v
 ```
 
-The 16 tests cover all protocol commands — PING (returns int, increasing),
-WHO (format, fingerprint stability), CHALLENGE (length, determinism, distinct
-inputs, hex-string input), SEED (length, non-determinism, range errors),
-VERSION, HELP, and error handling (unknown command, bad seed count).
+The 17 tests cover all protocol commands — PING (returns int, increasing),
+WHO (format with DEVICE + FINGERPRINT, device ID stability, fingerprint
+stability), CHALLENGE (length, determinism, distinct inputs, hex-string
+input), SEED (length, non-determinism, range errors), VERSION, HELP, and
+error handling (unknown command, bad seed count).
 
 Tests connect to a real Pico via `$PICO_HSM_PORT` (default `/dev/ttyACM0`).
 If no board is detected, all tests are **skipped** automatically — the suite
@@ -415,6 +428,18 @@ cannot offer:
   hold a button or just keep it plugged in) before a high-risk action proceeds.
   This turns the board into a hardware confirmation prompt.
 
+- **Device-authenticated sessions.** The persistent chip ID lets the host bind
+  a session to a *specific physical board*, not just "any powered Pico." At
+  provisioning time the host records the chip ID; on every subsequent
+  connection it verifies the `WHO` response matches before trusting the
+  session's HMACs. This catches board substitution — an attacker who plugs in
+  their own Pico with identical open-source firmware is rejected, because their
+  chip ID differs. It does **not** stop a determined attacker who has read your
+  chip ID and custom-flashed a spoofing board (the ID is a public serial
+  number, not a secret), but it raises the bar from "trivial" to "requires
+  targeted preparation with prior physical access" (see
+  [Device identity](#device-identity)).
+
 - **Teaching / prototyping HSM concepts.** The whole stack — entropy
   characterization, key minting, HMAC challenge/response, the physical-presence
   security model — is under 200 lines of readable MicroPython. It is a good
@@ -437,6 +462,12 @@ cannot offer:
   key derivation / tokenization, not as a certified cryptographic RNG.
 - The serial protocol is plaintext and unauthenticated beyond the HMAC itself;
   pair it with a trusted transport if you need confidentiality.
+- **The chip ID is a serial number, not a secret.** Anyone with USB access can
+  read `machine.unique_id()`. The device-identity check catches a casual board
+  swap (attacker's own Pico, stock firmware) but not a targeted spoof (attacker
+  read your chip ID, custom-flashed their board to report it). For
+  cryptographic anti-substitution, a secure element with a non-extractable key
+  (e.g. ATECC608A) is required. See [Device identity](#device-identity).
 - The board must be physically present and powered; that is the feature, not a
   bug.
 
@@ -444,12 +475,20 @@ cannot offer:
 
 ### v1.2.0
 
-- **Device identity via RP2040 chip ID.** The `WHO` response now includes a
-  `DEVICE <chip_id>` field — the factory-programmed 64-bit unique ID
-  (`machine.unique_id()`), persistent across reboots and reflashes. The host
-  client gains a `device_id()` method. This lets the host detect board
-  substitution by registering the chip ID at provisioning time and checking it
-  on every connection. See [Device identity](#device-identity).
+- **Persistent device identity (major).** The project's security model expands
+  from two pillars (true entropy + physical presence) to three: the `WHO`
+  response now includes a `DEVICE <chip_id>` field with the RP2040's
+  factory-programmed 64-bit chip ID (`machine.unique_id()`), persistent across
+  reboots and reflashes. This is a fundamental shift — the board now has a
+  *stable identity* that the host can verify, not just a volatile key. It
+  enables [device-authenticated sessions](#device-identity): register the chip
+  ID at provisioning time, check it on every connection, and reject a
+  substituted board before trusting any HMAC.
+- **Honest limitation.** The chip ID is a public serial number, not a secret.
+  It catches a casual board swap but not a targeted spoof. Full cryptographic
+  anti-substitution would require a secure element (ATECC608A). The README's
+  new [Device identity](#device-identity) section and [Limitations](#limitations--honest-notes)
+  document this trade-off explicitly.
 - **`PicoHSM.device_id()`** — new host client method returning the 16-hex-char
   chip ID.
 - Test suite: new `test_device_id_stable` test (17 total, all pass).
