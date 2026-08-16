@@ -27,12 +27,24 @@ class TestPing:
 @skip_no_hardware
 class TestWho:
     def test_who_format(self, hsm):
-        """WHO should return 'ID openhands-pico-hsm FINGERPRINT <64 hex>'."""
+        """WHO should return 'ID openhands-pico-hsm DEVICE <16hex> FINGERPRINT <64hex>'."""
         resp = hsm.who()
-        assert resp.startswith("ID openhands-pico-hsm FINGERPRINT ")
-        fp = resp.split("FINGERPRINT ", 1)[1].strip()
+        assert resp.startswith("ID openhands-pico-hsm DEVICE ")
+        assert " FINGERPRINT " in resp
+        parts = resp.split()
+        device = parts[parts.index("DEVICE") + 1]
+        fp = parts[parts.index("FINGERPRINT") + 1]
+        assert len(device) == 16
+        int(device, 16)  # valid hex
         assert len(fp) == 64
-        int(fp, 16)  # must be valid hex
+        int(fp, 16)
+
+    def test_device_id_stable(self, hsm):
+        """Device ID (chip ID) should be stable across calls within a session."""
+        did = hsm.device_id()
+        assert len(did) == 16
+        int(did, 16)
+        assert hsm.device_id() == did
 
     def test_fingerprint_stable_within_session(self, hsm):
         """Same fingerprint within one session (key is volatile per-boot)."""

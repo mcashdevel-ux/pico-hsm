@@ -1,10 +1,15 @@
-import trng, hashlib, ubinascii, time, sys
+import trng, hashlib, ubinascii, time, sys, machine
 
 # HSM: mints an in-RAM (volatile) HMAC key from silicon entropy on boot.
 # Key is NEVER written to flash; destroyed on power-loss.
 _KEY = trng.key256()
 
-_VERSION = 'pico-hsm/1.1.0'
+# Factory-programmed 64-bit chip ID — unique per RP2040, survives reflash.
+# Acts as a persistent device serial number so the host can detect
+# substitution. It is NOT a secret (anyone with USB access can read it).
+_DEVICE_ID = ubinascii.hexlify(machine.unique_id()).decode()
+
+_VERSION = 'pico-hsm/1.2.0'
 _COMMANDS = ('WHO', 'PING', 'CHALLENGE <hex>', 'SEED <n>', 'HELP', 'VERSION')
 
 def _hmac_sha256(key, msg):
@@ -42,7 +47,8 @@ def handle(line):
         raw = trng.raw_entropy(n)
         return 'SEED ' + ubinascii.hexlify(raw).decode()
     if line == 'WHO':
-        return 'ID openhands-pico-hsm FINGERPRINT ' + _fingerprint()
+        return ('ID openhands-pico-hsm DEVICE ' + _DEVICE_ID +
+                ' FINGERPRINT ' + _fingerprint())
     if line == 'PING':
         return 'PONG ' + str(time.ticks_ms())
     if line == 'VERSION':

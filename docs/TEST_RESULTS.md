@@ -146,11 +146,41 @@ VERSION pico-hsm/1.1.0 micropython-3.4.0
 ### pytest integration suite
 
 ```
-16 passed in 161.86s
+17 passed in 172.29s
 ```
 
-All 16 tests pass against real hardware: PING (returns int, increasing), WHO
-(format, fingerprint stability), CHALLENGE (32 bytes, deterministic, distinct
-inputs, hex-string input), SEED (correct length 1–256, non-deterministic,
-range/count errors), VERSION, HELP, and error handling (unknown command, bad
-seed count). Tests skip automatically when no board is connected.
+All 17 tests pass against real hardware: PING (returns int, increasing), WHO
+(format with DEVICE + FINGERPRINT, device ID stable, fingerprint stable),
+CHALLENGE (32 bytes, deterministic, distinct inputs, hex-string input), SEED
+(correct length 1–256, non-deterministic, range/count errors), VERSION, HELP,
+and error handling (unknown command, bad seed count). Tests skip automatically
+when no board is connected.
+
+---
+
+## v1.2.0 — Device identity (RP2040 chip ID)
+
+### Chip ID stable across reboots
+
+The RP2040 factory chip ID (`machine.unique_id()`) captured across two
+soft-resets of the board:
+
+```
+boot 1: DEVICE e6605481db5f6734 FINGERPRINT 165d0e93522ba75d2f0b8f9af5e099a3b955d312db08f4b01cb423038b0aee42
+boot 2: DEVICE e6605481db5f6734 FINGERPRINT 13ee39d3d262e74daa7459973235a0aba781b85be116d12d68f3ac3e844ce3ee
+```
+
+Device ID is identical across both boots; fingerprint changes (volatile key
+working as designed).
+
+### WHO response (new format)
+
+```
+ID openhands-pico-hsm DEVICE e6605481db5f6734 FINGERPRINT c39d2b712a38c30f414dee5c360573f516f152b253a3de8ca7ce4676d0cac826
+```
+
+### Host client — device_id() method
+
+```
+device ID: e6605481db5f6734
+```

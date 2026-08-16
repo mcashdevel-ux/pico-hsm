@@ -94,8 +94,15 @@ class PicoHSM:
         return resp
 
     def who(self):
-        """Return the WHO response line (ID ... FINGERPRINT <hex>)."""
+        """Return the WHO response line (ID ... DEVICE <hex> FINGERPRINT <hex>)."""
         return self._send("WHO")
+
+    def device_id(self):
+        """Return the 16-hex-char chip ID (persistent per-board identity)."""
+        resp = self.who()
+        if "DEVICE " in resp:
+            return resp.split("DEVICE ", 1)[1].split()[0]
+        return resp
 
     def fingerprint(self):
         """Return just the hex fingerprint string."""
@@ -151,6 +158,7 @@ def _demo(hsm):
 
     print("\n=== WHO ===")
     print(hsm.who())
+    print("device ID:", hsm.device_id())
 
     challenge = os.urandom(32)
     ch_hex = binascii.hexlify(challenge).decode()

@@ -37,6 +37,7 @@ used for the two things a normal Linux host *cannot* do:
 - [Demo](#demo)
 - [Programmatic usage](#programmatic-usage)
 - [How it works](#how-it-works)
+- [Device identity](#device-identity)
 - [Repository layout](#repository-layout)
 - [Setup](#setup)
 - [Reproduce](#reproduce)
@@ -54,31 +55,38 @@ Real output captured from a Pico running this code, driven by
 
 ```
 === PING ===
-629849
+53506
 
 === WHO ===
-ID openhands-pico-hsm FINGERPRINT 40852620331f5d8111de55799f3bed5738d4c1bda2adf3f0b2dde386042b56c4
+ID openhands-pico-hsm DEVICE e6605481db5f6734 FINGERPRINT d088a715a19896a68950e4e6aad6f262b52b0f7c719a6d1c571e8b41e54f8e86
+device ID: e6605481db5f6734
 
 === CHALLENGE (host-side random) ===
-challenge hex: 2337bc72f3886f431a6a40864a7a33da75ce46d80f52a630cfec3401fc29caf
-response: c32a32c6f88bd9087e8c673622f9c2c9e70a1748ae5a3d5d4d28c49ae7cade3f
+challenge hex: 3d52b838222beed96c415b67395a4ec03cd39c6fe512570aa2b65fca067d8146
+response: c5847d01217ba79458aac50771eaf92295ad84b2de6ec8f828700fb2c5244f76
 Got HMAC (32 bytes)
 NOTE: host cannot verify without the key (good - key stays on Pico).
 
 === SEED 32 ===
-raw entropy (32 bytes): cfb493d59c35cb01898a1ed279a6c05299e43b6d4a91bda1f363e436206128e1
+raw entropy (32 bytes): 47de541fb37c91f30a6c594ade8451748c195b92ba61ac134074d47efcf4c16a
 
 === consistency: same challenge again ===
 deterministic (same challenge -> same HMAC)? True
 
 === VERSION ===
-VERSION pico-hsm/1.1.0 micropython-3.4.0
+VERSION pico-hsm/1.2.0 micropython-3.4.0
 ```
 
-The `WHO` fingerprint is `sha256(b'pico-hsm-v1:' + key)` — a stable identifier
-for this session's key that reveals nothing about the key itself. The same
-challenge yields the same HMAC within a session; power-cycle the board and you
-get a brand-new fingerprint and unrelated HMACs.
+The `WHO` response now includes a **DEVICE** field — the factory-programmed
+64-bit chip ID (`machine.unique_id()`), unique per RP2040 and persistent across
+reboots and reflashes. The **FINGERPRINT** (`sha256(b'pico-hsm-v1:' + key)`) is
+a stable identifier for this session's volatile key that reveals nothing about
+the key itself — it changes every boot. The same challenge yields the same HMAC
+within a session; power-cycle the board and you get a brand-new fingerprint and
+unrelated HMACs, but the **same** device ID.
+
+The host can register the device ID at provisioning time and check it on every
+connection to detect board substitution (see [Device identity](#device-identity)).
 
 ## Programmatic usage
 
@@ -88,13 +96,14 @@ get a brand-new fingerprint and unrelated HMACs.
 from hsm_client import PicoHSM
 
 with PicoHSM("/dev/ttyACM0") as hsm:
-    print(hsm.who())                      # ID ... FINGERPRINT <hex>
-    print(hsm.fingerprint())              # just the hex fingerprint
-    print(hsm.ping())                     # tick count (int)
-    mac = hsm.challenge(b"deadbeef")      # -> 32-byte HMAC-SHA256 (bytes)
-    raw = hsm.seed(32)                    # -> 32 bytes of raw TRNG entropy
-    print(hsm.version())                  # VERSION pico-hsm/1.1.0 ...
-    print(hsm.help())                     # COMMANDS WHO PING ...
+    print(hsm.device_id())               # chip ID — stable, persistent (e6605481db5f6734)
+    print(hsm.who())                     # ID ... DEVICE <hex> FINGERPRINT <hex>
+    print(hsm.fingerprint())             # just the hex fingerprint (changes per boot)
+    print(hsm.ping())                    # tick count (int)
+    mac = hsm.challenge(b"deadbeef")     # -> 32-byte HMAC-SHA256 (bytes)
+    raw = hsm.seed(32)                   # -> 32 bytes of raw TRNG entropy
+    print(hsm.version())                 # VERSION pico-hsm/1.2.0 ...
+    print(hsm.help())                    # COMMANDS WHO PING ...
 ```
 
 The port defaults to `$PICO_HSM_PORT` or `/dev/ttyACM0`. `challenge()` accepts
@@ -128,12 +137,16 @@ either `bytes` or a hex string; `seed(n)` returns raw bytes (1–256).
 
   | Command           | Response                                          |
   |-------------------|---------------------------------------------------|
-  | `WHO`             | `ID openhands-pico-hsm FINGERPRINT <sha256(key)>` |
+  | `WHO`             | `ID openhands-pico-hsm DEVICE <chip_id> FINGERPRINT <sha256(key)>` |
   | `PING`            | `PONG <ticks_ms>`                                 |
   | `CHALLENGE <hex>` | `RESPONSE <hex HMAC-SHA256(key, challenge)>`      |
   | `SEED <n>`        | `SEED <hex>` — *n* raw TRNG bytes (1–256)         |
   | `HELP`            | `COMMANDS <space-separated command list>`         |
   | `VERSION`         | `VERSION pico-hsm/<ver> micropython-<ver>`        |
+
+  The `DEVICE` field in `WHO` is the RP2040's factory chip ID
+  (`machine.unique_id()`), a 16-hex-char persistent identifier. The
+  `FINGERPRINT` is `sha256(b'pico-hsm-v1:' + key)` — volatile, changes per boot.
 
 - HMAC-SHA256 is implemented from scratch (RFC 2104) because MicroPython has no
   `hmac` module. It was verified **bit-exact** against the host's stdlib
@@ -155,6 +168,52 @@ key — only its fingerprint — which is the whole point.
 `host/trng_stats.py` pulls raw entropy via repeated `SEED` calls and runs three
 lightweight statistical suites (monobit, runs, chi-square on byte distribution)
 as a quick sanity check that the entropy source hasn't degraded.
+
+## Device identity
+
+The `WHO` response includes the RP2040's factory-programmed 64-bit chip ID
+(`machine.unique_id()`) in the `DEVICE` field. This ID is:
+
+- **Unique per chip** — set at manufacturing, no two RP2040s share it.
+- **Persistent** — survives reboots, power cycles, and reflashes. It's in the
+  silicon, not flash.
+- **Public, not secret** — anyone with USB access can read it. It's a serial
+  number, like a car's VIN.
+
+### Detecting board substitution
+
+Register the chip ID at provisioning time, then check it on every connection:
+
+```python
+from hsm_client import PicoHSM
+
+REGISTERED_DEVICE = "e6605481db5f6734"   # captured once from your board
+
+with PicoHSM() as hsm:
+    if hsm.device_id() != REGISTERED_DEVICE:
+        raise SystemExit("WRONG BOARD — refusing to proceed")
+    # only now trust the fingerprint + HMACs for this session
+```
+
+This catches the most likely attack: an attacker plugs in **their own** Pico
+with the same open-source firmware. Their chip ID won't match, so the host
+rejects the session before any HMAC is trusted.
+
+### What it does NOT prevent
+
+The chip ID is readable, not secret. An attacker who has had physical access to
+your specific Pico can learn its ID, then flash custom firmware onto their own
+Pico that hardcodes your ID. The substitution would then be undetectable. This
+is the fundamental limitation of using a public identifier for authentication.
+For cryptographic protection against device substitution, a secure element (e.g.
+ATECC608A) with a non-extractable key is required — the RP2040 alone cannot
+provide this.
+
+| Threat | Chip ID check | Secure element |
+|-------|---------------|----------------|
+| Random/stock-firmware Pico swap | **blocked** | blocked |
+| Attacker read your ID, spoofed it in custom firmware | not blocked | **blocked** |
+| Key extraction from board | n/a (no persistent key) | **blocked** (non-extractable) |
 
 ## Repository layout
 
@@ -312,7 +371,8 @@ test record, including:
 - Three boots → three fingerprints (fresh volatile key per boot).
 - Determinism within a session (same challenge → same HMAC).
 - TRNG statistical tests (monobit, runs, chi-square) — all pass on 4096 bytes.
-- 16/16 pytest integration tests pass against real hardware.
+- 17/17 pytest integration tests pass against real hardware.
+- Chip ID stable across reboots (e6605481db5f6734); fingerprint changes per boot.
 
 ## Applications
 
@@ -381,6 +441,18 @@ cannot offer:
   bug.
 
 ## Changelog
+
+### v1.2.0
+
+- **Device identity via RP2040 chip ID.** The `WHO` response now includes a
+  `DEVICE <chip_id>` field — the factory-programmed 64-bit unique ID
+  (`machine.unique_id()`), persistent across reboots and reflashes. The host
+  client gains a `device_id()` method. This lets the host detect board
+  substitution by registering the chip ID at provisioning time and checking it
+  on every connection. See [Device identity](#device-identity).
+- **`PicoHSM.device_id()`** — new host client method returning the 16-hex-char
+  chip ID.
+- Test suite: new `test_device_id_stable` test (17 total, all pass).
 
 ### v1.1.0
 
