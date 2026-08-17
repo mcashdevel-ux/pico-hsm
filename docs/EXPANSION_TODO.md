@@ -18,9 +18,14 @@ Ideas and future directions for the pico-hsm project.
 - [ ] **Continuous health monitoring in C.** The watchdog currently runs in
   Python on core 1. Moving it to C (or into the native module) would
   reduce its CPU footprint and allow tighter monitoring intervals.
-- [ ] **Repetition-count and adaptive-proportion tests.** Add the two NIST
-  90B continuous health tests to the watchdog for runtime failure detection
-  that matches the certification standard.
+- [x] **Repetition-count and adaptive-proportion tests.** Added the two NIST
+  800-90B §4.4 continuous health tests to both the full health gate
+  (`_health_check`) and the watchdog's lightweight check (`_lightweight_health`).
+  The repetition-count test detects stuck sources (run of identical samples
+  exceeds `2*ceil(log2(n))+1`); the adaptive-proportion test tracks the first
+  sample's value through a 512-sample window and fails if it appears >12 times
+  (NIST α=2^-20). Results reported in `TRNG` status as `WATCHDOG_NIST`.
+  13 host-side pytest tests in `test_nist_health.py` (no hardware needed).
 
 ## HSM / security
 

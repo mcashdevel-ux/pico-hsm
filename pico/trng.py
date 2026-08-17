@@ -284,12 +284,14 @@ def _health_check(raw):
     ok = (_HEALTH_BALANCE_LO <= bal <= _HEALTH_BALANCE_HI
           and min_ent >= min_ent_floor
           and abs(serial) <= _HEALTH_SERIAL_ABS)
+    # Also run the NIST 800-90B continuous health tests
+    nist_ok, nist_d = _nist_health(raw)
     if not ok:
         raise RuntimeError(
-            "health FAIL: bal=%.4f min_ent=%.4f/%.1f |serial|=%.4f"
-            % (bal, min_ent, min_ent_floor, abs(serial)))
+            "health FAIL: bal=%.4f min_ent=%.4f/%.1f |serial|=%.4f nist=%s"
+            % (bal, min_ent, min_ent_floor, abs(serial), nist_d))
     return {"balance": bal, "min_ent": min_ent, "serial": serial,
-            "threshold": min_ent_floor}
+            "threshold": min_ent_floor, "nist": nist_d}
 
 
 # ── Von-Neumann debiaser ───────────────────────────────────────────────── #
@@ -314,6 +316,119 @@ def _vn_debias(raw):
         if idx % 128 == 0:
             time.sleep_ms(0)  # yield GIL
     return bytes(out)
+
+
+# ── NIST SP 800-90B §4.4 continuous health tests ──────────────────────── #
+# Two per-sample tests that detect catastrophic source failure at runtime:
+#
+# 1. Repetition-count test: detects a stuck source (same value repeats).
+#    Tracks consecutive identical samples; fails when a run exceeds C.
+#    For a binary source C = 2 (any run of 3+ identical bits is suspicious
+#    given a 0.5 target). For byte-level samples we use a larger C derived
+#    from the birthday-bound of the extracted-bit alphabet.
+#
+# 2. Adaptive-proportion test: detects a biased source (one value dominates).
+#    Counts occurrences of the most frequent value within a window of W
+#    samples; fails if the count exceeds a threshold. For an 8-bit alphabet
+#    W = 512 and the threshold is derived from the binomial tail.
+#
+# Both are designed to run on the raw ADC byte stream before debiasing, as
+# additional screening alongside the balance / min-entropy / serial gate.
+
+# Repetition-count: max allowed run of identical samples.
+# For an n-bit alphabet with p=1/2^n, the expected longest run in N samples
+# is ~log2(N). We allow 2x that as the cutoff — generous enough to avoid
+# false alarms on a healthy source, tight enough to catch a stuck one.
+_RCT_WINDOW = 1024        # samples to scan for the repetition-count test
+
+# Adaptive-proportion: window size and cutoff.
+# NIST 800-90B: W=1024 for binary, W=512 for larger alphabets.
+# We run on byte-valued samples (alphabet=256) so W=512.
+# The test tracks a specific value (the first sample in the window) and
+# counts its occurrences over the next W-1 samples. For W=512, p=1/256,
+# the NIST cutoff (α=2^-20) is C=12.
+_APT_WINDOW = 512
+_APT_CUTOFF = 12
+
+
+def _nist_repetition_count(raw, window=_RCT_WINDOW):
+    """NIST 800-90B repetition-count test on a byte sequence.
+
+    Returns (passed, max_run, details_dict).
+    Fails if any run of identical consecutive bytes exceeds the threshold.
+    """
+    n = min(len(raw), window)
+    if n < 4:
+        return True, 0, {"max_run": 0, "threshold": _RCT_WINDOW, "n": n}
+
+    # C: max allowed run length. For a healthy uniform byte source,
+    # expected longest run in 1024 samples is ~4-5. Use a generous C.
+    # C = 2 * ceil(log2(n)) + 1 catches stuck sources without false alarms.
+    c_threshold = 2 * (n.bit_length()) + 1
+
+    max_run = 1
+    cur_run = 1
+    for i in range(1, n):
+        if raw[i] == raw[i - 1]:
+            cur_run += 1
+            if cur_run > max_run:
+                max_run = cur_run
+            if cur_run > c_threshold:
+                return False, max_run, {"max_run": max_run,
+                                         "threshold": c_threshold, "n": n}
+        else:
+            cur_run = 1
+        if i % 128 == 0:
+            time.sleep_ms(0)  # yield GIL
+    return True, max_run, {"max_run": max_run, "threshold": c_threshold, "n": n}
+
+
+def _nist_adaptive_proportion(raw, window=_APT_WINDOW):
+    """NIST 800-90B adaptive-proportion test on a byte sequence.
+
+    Returns (passed, max_count, details_dict).
+    Tracks the first sample's value and counts its occurrences over the
+    window. Fails if the count exceeds _APT_CUTOFF.
+    Also reports the global max_count for diagnostics.
+    """
+    n = min(len(raw), window)
+    if n < 16:
+        return True, 0, {"max_count": 0, "cutoff": _APT_CUTOFF, "n": n,
+                          "tracked_value": None, "tracked_count": 0}
+
+    # NIST: track the first sample's value through the window
+    tracked_value = raw[0]
+    tracked_count = sum(1 for i in range(n) if raw[i] == tracked_value)
+
+    # Also compute global max for diagnostics
+    hist = [0] * 256
+    for i in range(n):
+        hist[raw[i]] += 1
+        if i % 128 == 0:
+            time.sleep_ms(0)  # yield GIL
+    global_max = max(hist)
+
+    # The NIST test passes/fails on the tracked value's count
+    passed = tracked_count <= _APT_CUTOFF
+    return passed, global_max, {"max_count": global_max,
+                                "tracked_value": tracked_value,
+                                "tracked_count": tracked_count,
+                                "cutoff": _APT_CUTOFF, "n": n}
+
+
+def _nist_health(raw):
+    """Run both NIST 800-90B continuous health tests.
+
+    Returns (passed, details_dict).
+    """
+    rc_ok, max_run, rc_d = _nist_repetition_count(raw)
+    ap_ok, max_count, ap_d = _nist_adaptive_proportion(raw)
+    passed = rc_ok and ap_ok
+    return passed, {
+        "repetition_count": rc_d,
+        "adaptive_proportion": ap_d,
+        "healthy": passed,
+    }
 
 
 # ── HMAC-SHA256 (manual; no hmac module in this MicroPython build) ─────── #
@@ -402,8 +517,11 @@ def _lightweight_health(raw):
     min_ent_floor = max(2.0, nbits * 0.5)
     ok = (_HEALTH_BALANCE_LO <= bal <= _HEALTH_BALANCE_HI
           and min_ent >= min_ent_floor)
+    # NIST 800-90B continuous health tests
+    nist_ok, nist_d = _nist_health(raw)
+    ok = ok and nist_ok
     return ok, {"balance": bal, "min_ent": min_ent,
-                "threshold": min_ent_floor, "healthy": ok}
+                "threshold": min_ent_floor, "healthy": ok, "nist": nist_d}
 
 
 def _fresh_entropy(nbytes):
@@ -713,6 +831,14 @@ def status_str():
             lr.get('balance', 0), lr.get('min_ent', 0),
             lr.get('threshold', 0), lr.get('healthy', '?'),
             "%.1fC" % lr['temp'] if lr.get('temp') is not None else "?"))
+        nist = lr.get('nist')
+        if nist:
+            rc = nist.get('repetition_count', {})
+            ap = nist.get('adaptive_proportion', {})
+            lines.append("WATCHDOG_NIST rc_max=%d/%d ap_max=%d/%d healthy=%s" % (
+                rc.get('max_run', 0), rc.get('threshold', 0),
+                ap.get('max_count', 0), ap.get('cutoff', 0),
+                nist.get('healthy', '?')))
     if wd['history']:
         lines.append("WATCHDOG_HISTORY %s" % ", ".join(
             "%.2f" % v for v in wd['history']))

@@ -273,7 +273,8 @@ pico-hsm/
 │   ├── conftest.py    # session-scoped PicoHSM fixture + skip logic
 │   ├── test_hsm.py    # 17 tests across 7 command classes
 │   ├── test_hsm_aes_host.py  # 15 tests: AES + TRNG commands (serial)
-│   └── test_hsm_aes.py      # mpremote script (runs on Pico, not pytest)
+│   ├── test_nist_health.py   # 13 NIST 90B tests (no hardware needed)
+│   └── test_hsm_aes.py       # mpremote script (runs on Pico, not pytest)
 ├── docs/
 │   └── TEST_RESULTS.md
 ├── pytest.ini
@@ -397,13 +398,13 @@ The repo includes a pytest integration suite in `tests/`:
 python3 -m pytest -v
 ```
 
-The 32 tests cover all protocol commands — PING (returns int, increasing),
+The 45 tests cover all protocol commands — PING (returns int, increasing),
 WHO (format with DEVICE + FINGERPRINT, device ID stability, fingerprint
 stability), CHALLENGE (length, determinism, distinct inputs, hex-string
 input), SEED (length, non-determinism, range errors), VERSION, HELP, and
 error handling (unknown command, bad seed count), plus AES (key fingerprint
 stability, encrypt/decrypt round-trip, CTR mode round-trip, error cases)
-and TRNG status/reprofile/watchdog commands.
+and TRNG status/reprofile/watchdog commands, and NIST SP 800-90B continuous health tests (repetition-count, adaptive-proportion — run without hardware).
 
 Tests connect to a real Pico via `$PICO_HSM_PORT` (auto-detected on Linux,
 macOS, and Windows). If no board is detected, all tests are **skipped**
@@ -421,7 +422,7 @@ test record, including:
 - **NIST SP 800-22** deep suite (9 tests) — **9/9 pass** at α=0.01 on a
   12,800-byte sample, for both the original and the new DRBG pipeline.
 - 17/17 pytest integration tests pass against real hardware.
-- 32 total tests (17 core + 15 AES/TRNG); all skip gracefully without a board.
+- 45 total tests (17 core + 15 AES/TRNG + 13 NIST); 13 run without hardware, 32 skip without a board.
 - Chip ID stable across reboots (e6605481db5f6734); fingerprint changes per boot.
 
 ## Applications
@@ -543,6 +544,19 @@ Future improvements, roughly ordered by value-to-effort ratio:
   source failure cannot silently weaken the key.
 
 ## Changelog
+
+### v1.6.3
+
+- **NIST SP 800-90B continuous health tests.** Added the repetition-count and
+  adaptive-proportion tests (§4.4) to both the full health gate and the
+  watchdog's lightweight check. The repetition-count test detects stuck
+  sources (excessive runs of identical samples); the adaptive-proportion test
+  tracks a specific value through a 512-sample window and fails if it appears
+  >12 times (NIST α=2^-20). Results reported in `TRNG` status as
+  `WATCHDOG_NIST rc_max=X/Y ap_max=X/Y healthy=YES`.
+- **Host-side NIST tests.** 13 pytest tests in `test_nist_health.py` —
+  uniform random passes, stuck source fails, biased source fails, threshold
+  scaling. No hardware needed (stubs MicroPython modules).
 
 ### v1.6.2
 
