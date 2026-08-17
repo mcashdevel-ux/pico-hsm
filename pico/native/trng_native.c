@@ -50,7 +50,7 @@ void *memcpy(void *dst, const void *src, size_t n) {
 
 #define ADC_BASE   0x4004c000
 #define ADC_CS     (*(volatile uint32_t *)(ADC_BASE + 0x00))
-#define ADC_RESULT (*(volatile uint32_t *)(ADC_BASE + 0x08))
+#define ADC_RESULT (*(volatile uint32_t *)(ADC_BASE + 0x04))
 
 /* ADC_CS bits */
 #define ADC_CS_EN        (1u << 0)   /* Enable ADC */
@@ -63,18 +63,23 @@ int adc_inited = 0;
 
 static void adc_check_enabled(void) {
     if (adc_inited) return;
-    /* The ADC should already be enabled by MicroPython's machine.ADC.
-     * Just set the EN bit if it's not already set (safe — doesn't touch
-     * clocks or resets).  Channel 0 = GPIO26 (the noise source). */
+    /* The ADC clock and reset are managed by MicroPython's machine.ADC
+     * driver, which runs during trng._init().  We only need to verify the
+     * EN bit is set; if it isn't, set it (safe — doesn't touch clocks). */
     if (!(ADC_CS & ADC_CS_EN)) {
-        ADC_CS = ADC_CS_EN | (0u << ADC_CS_AINSEL_SHIFT);
+        ADC_CS = ADC_CS_EN;
         for (volatile int i = 0; i < 100; i++) ;
     }
     adc_inited = 1;
 }
 
 static inline uint16_t adc_read_raw(void) {
-    ADC_CS |= ADC_CS_START_ONCE;
+    /* Write EN | AINSEL=0 | START_ONCE directly.  This ensures channel 0
+     * (GP26) is selected every time — MicroPython may have left AINSEL
+     * pointing at channel 4 (temperature sensor) after a read_temp() call.
+     * Direct write avoids read-modify-write where we might write back a
+     * stale READY bit. */
+    ADC_CS = ADC_CS_EN | (0u << ADC_CS_AINSEL_SHIFT) | ADC_CS_START_ONCE;
     /* Wait for READY with a timeout (don't hang if ADC is stuck). */
     for (int i = 0; i < 10000; i++) {
         if (ADC_CS & ADC_CS_READY) break;

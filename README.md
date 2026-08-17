@@ -52,6 +52,7 @@ used for the three things a normal Linux host *cannot* do:
 - [Verified results](#verified-results)
 - [Applications](#applications)
 - [Limitations & honest notes](#limitations--honest-notes)
+- [Roadmap & expansion TODO](#roadmap--expansion-todo)
 - [Changelog](#changelog)
 - [License](#license)
 
@@ -505,7 +506,60 @@ cannot offer:
 - The board must be physically present and powered; that is the feature, not a
   bug.
 
+## Roadmap & expansion TODO
+
+Future improvements, roughly ordered by value-to-effort ratio:
+
+- **SHA-256 in native C.** Currently the native module handles only the
+  ADC→health→VN-debias hot path; the HMAC-DRBG / SHA-256 condensing still runs
+  in Python. Moving SHA-256 into C (or using the RP2040's hardware SHA-256 if
+  available in the firmware build) would speed up `key256()` and `raw_entropy()`
+  further.
+- **Ring-oscillator entropy source.** The RP2040 has no dedicated TRNG, but
+  multiple ring oscillators can be instantiated from unused GPIO pins and
+  sampled as an independent entropy source, providing source diversity beyond
+  the single ADC noise pin.
+- **Continuous health testing (NIST SP 800-90B §4.4).** The watchdog does
+  periodic health checks, but a continuous repetition-count and adaptive
+  proportion test on every entropy block would bring the health gate closer to
+  90B certification.
+- **Secure-element support (ATECC608A).** Add an I²C-connected secure element
+  for non-extractable key storage and cryptographic device identity, enabling
+  true anti-substitution.
+- **Encrypted serial protocol.** Wrap the command/response protocol in a
+  lightweight AEAD (e.g. ChaCha20-Poly1305) with an ephemeral session key
+  negotiated at boot, so the transport is confidential and authenticated, not
+  just plaintext-over-USB.
+- **Entropy seeding rate monitor.** Track and report the effective entropy
+  generation rate (bits/second) in the `TRNG` status output, so the operator
+  can detect if the source has degraded below the required throughput.
+- **Multi-source entropy mixing.** Combine ADC noise with a second source
+  (ring oscillator, ROsc jitter) via XOR or a hash combiner, so a single
+  source failure cannot silently weaken the key.
+
 ## Changelog
+
+### v1.6.1
+
+- **LED status indicator.** The onboard LED (GP25) now shows HSM health at a
+  glance: **solid ON** = healthy and ready, **fast blink** = degraded (TRNG
+  unhealthy, using fallback key). Uses a hardware timer interrupt (no extra
+  thread — RP2040 MicroPython only supports one core-1 thread, already used
+  by the entropy watchdog).
+- **ADC register offset fix (native module).** The native C module was
+  reading the ADC FCS register (offset 0x08) instead of ADC RESULT (offset
+  0x04), causing all ADC reads to return zero. Fixed — `collect_raw` and
+  `fresh_entropy` now produce real entropy.
+- **ADC channel selection fix (native module).** `adc_read_raw()` now writes
+  `EN | AINSEL=0 | START_ONCE` directly on every read, ensuring channel 0
+  (GP26) is always selected. Previously, MicroPython's temperature sensor
+  reads could leave AINSEL pointing at channel 4.
+- **Host client robustness.** `hsm_client.py` now sends Ctrl-C before Ctrl-D
+  to properly exit raw REPL mode (left by `mpremote exec` sessions) before
+  soft-resetting. Banner draining also handles the multi-line boot banner
+  (ID + AES ready lines) correctly.
+- **Verified on hardware.** SEED 32 bytes: 0.000s (native) vs ~20s (Python
+  fallback). CHALLENGE deterministic. NIST entropy tests pass on 512 bytes.
 
 ### v1.6.0
 

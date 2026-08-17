@@ -42,7 +42,7 @@ except Exception:
 # Factory-programmed 64-bit chip ID — unique per RP2040, survives reflash.
 _DEVICE_ID = ubinascii.hexlify(machine.unique_id()).decode()
 
-_VERSION = 'pico-hsm/1.6.0'
+_VERSION = 'pico-hsm/1.6.1'
 _COMMANDS = ('WHO', 'PING', 'CHALLENGE <hex>', 'SEED <n>',
              'AES_ENC <hex32>', 'AES_DEC <hex32>',
              'AES_CTR <hex_nonce32> <hex_data>', 'AES_KEY',

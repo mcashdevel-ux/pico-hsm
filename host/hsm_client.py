@@ -30,8 +30,12 @@ class PicoHSM:
         self.port = port
         self.ser = serial.Serial(port, baud, timeout=5, dsrdtr=False, rtscts=False)
         time.sleep(0.3)
-        # Send Ctrl-D to soft-reset the Pico, which re-runs main.py.
-        # The Pico may be in raw REPL mode from a prior mpremote session.
+        # Send Ctrl-C twice to interrupt any running code and exit raw REPL
+        # mode (left by prior mpremote sessions). Then Ctrl-D to soft-reset,
+        # which re-runs main.py.
+        self.ser.write(b"\x03\x03")
+        time.sleep(0.2)
+        self.ser.read(256)  # drain any interrupt output
         self.ser.write(b"\x04")
         self._drain_banner()
         # The first command after a soft-reset often catches leftover serial
@@ -42,8 +46,8 @@ class PicoHSM:
         """Read and discard the boot banner.
 
         A soft-reset (Ctrl-D) reboots the Pico; trng.key256() takes several
-        seconds. Read until we see the FINGERPRINT line, then drain any
-        trailing whitespace/newlines.
+        seconds. Read until we see the FINGERPRINT line, then keep draining
+        any remaining banner lines (AES ready, etc.) with a short timeout.
         """
         buf = b""
         end = time.time() + 15
@@ -52,11 +56,15 @@ class PicoHSM:
             if b:
                 buf += b
                 if b"FINGERPRINT" in buf:
-                    time.sleep(0.2)
-                    self.ser.read(256)
                     break
             else:
                 time.sleep(0.2)
+        # Drain any remaining banner lines (e.g. "AES ready. FINGERPRINT ...")
+        end = time.time() + 1
+        while time.time() < end:
+            b = self.ser.read(256)
+            if not b:
+                break
 
     def _send(self, cmd):
         """Send a command line, return the first non-echo response line."""
@@ -171,7 +179,10 @@ def _demo(hsm):
 
     print("\n=== SEED 32 ===")
     raw = hsm.seed(32)
-    print("raw entropy (%d bytes): %s" % (len(raw), binascii.hexlify(raw).decode()))
+    if isinstance(raw, (bytes, bytearray)):
+        print("raw entropy (%d bytes): %s" % (len(raw), binascii.hexlify(raw).decode()))
+    else:
+        print("SEED error:", raw)
 
     print("\n=== consistency: same challenge again ===")
     mac2 = hsm.challenge(challenge)
