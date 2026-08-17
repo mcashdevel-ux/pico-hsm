@@ -47,7 +47,8 @@ _COMMANDS = ('WHO', 'PING', 'CHALLENGE <hex>', 'SEED <n>',
              'AES_ENC <hex32>', 'AES_DEC <hex32>',
              'AES_CTR <hex_nonce32> <hex_data>', 'AES_KEY',
              'TRNG', 'TRNG_REPROFILE', 'TRNG_WATCHDOG [ON|OFF|<ms>]',
-             'RATE_LIMIT [STATUS|RESET]', 'JSON [ON|OFF]', 'HELP', 'VERSION')
+             'RATE_LIMIT [STATUS|RESET]', 'JSON [ON|OFF]',
+             'AUDIT [N|CLEAR]', 'HELP', 'VERSION')
 
 _JSON_MODE = False
 
@@ -104,6 +105,15 @@ def _format(resp):
                 s["requests_in_window"], s["max_per_window"], s["window_ms"]))
         return ("RATE_LIMIT OK requests=%d/%d window=%dms" % (
             s["requests_in_window"], s["max_per_window"], s["window_ms"]))
+    if cmd == "AUDIT":
+        entries = resp["entries"]
+        if not entries:
+            return "AUDIT empty entries=%d/%d" % (0, resp["capacity"])
+        lines = ["AUDIT entries=%d/%d" % (resp["count"], resp["capacity"])]
+        for e in entries:
+            lines.append("  %s %s ch=%s %s" % (
+                e["ts"], e["cmd"], e["ch_hash"], e["result"]))
+        return "\n".join(lines)
     if cmd == "VERSION":
         return "VERSION " + resp["version"] + " micropython-" + resp["mpy"]
     if cmd == "HELP":
@@ -199,6 +209,61 @@ def _rate_reset():
     _rate_lockout_ms = 0
 
 
+# ── Audit log (in-RAM ring buffer) ─────────────────────────────────────── #
+# Records CHALLENGE events for post-incident forensics. Stores timestamp +
+# challenge hash (SHA-256 of the challenge, NOT the raw challenge or response)
+# to protect the volatile key — an attacker reading the log cannot verify the
+# key from hashes alone. In-RAM only (lost on power-off), consistent with the
+# volatile-key design; flash persistence deferred (wear-leveling + key-leak
+# tradeoff needs threat analysis first).
+_AUDIT_MAX = 64
+_audit_log = []
+_audit_head = 0  # index of oldest entry
+
+
+def _audit_record(cmd, challenge_bytes, result):
+    """Record a challenge event in the audit ring buffer."""
+    global _audit_head
+    entry = {
+        'ts': time.ticks_ms(),
+        'cmd': cmd,
+        'ch_hash': ubinascii.hexlify(
+            hashlib.sha256(challenge_bytes).digest()[:8]).decode(),
+        'result': result,  # 'ok', 'rate-limited', 'bad-hex'
+    }
+    if len(_audit_log) < _AUDIT_MAX:
+        _audit_log.append(entry)
+    else:
+        _audit_log[_audit_head] = entry
+        _audit_head = (_audit_head + 1) % _AUDIT_MAX
+
+
+def _audit_get(n=10):
+    """Return the last n audit entries (newest first)."""
+    if not _audit_log:
+        return []
+    total = len(_audit_log)
+    if n > total:
+        n = total
+    if total < _AUDIT_MAX:
+        # Not yet wrapped — linear, newest at end
+        return list(reversed(_audit_log[-n:]))
+    # Wrapped — start from head-1 (newest) going back
+    result = []
+    idx = (_audit_head - 1) % _AUDIT_MAX
+    for _ in range(n):
+        result.append(_audit_log[idx])
+        idx = (idx - 1) % _AUDIT_MAX
+    return result
+
+
+def _audit_clear():
+    """Wipe the audit log."""
+    global _audit_head
+    _audit_log[:] = []
+    _audit_head = 0
+
+
 def handle(line):
     global _JSON_MODE
     line = line.strip()
@@ -207,12 +272,15 @@ def handle(line):
     if line.startswith('CHALLENGE '):
         ok, retry = _rate_check('CHALLENGE')
         if not ok:
+            _audit_record('CHALLENGE', line[10:].encode(), 'rate-limited')
             return _format(_resp(False, 'CHALLENGE', error='rate-limited',
                                  retry_after_ms=retry))
         ch = _parse_hex(line[10:].strip())
         if ch is None:
+            _audit_record('CHALLENGE', line[10:].encode(), 'bad-hex')
             return _format(_resp(False, 'CHALLENGE', error='bad-hex'))
         mac = _hmac_sha256(_KEY, ch)
+        _audit_record('CHALLENGE', ch, 'ok')
         return _format(_resp(True, 'CHALLENGE',
                              response=ubinascii.hexlify(mac).decode()))
     if line.startswith('SEED '):
@@ -328,6 +396,26 @@ def handle(line):
     if line == 'RATE_LIMIT RESET':
         _rate_reset()
         return _format(_resp(True, 'RATE_LIMIT', status=_rate_status()))
+    if line == 'AUDIT CLEAR':
+        _audit_clear()
+        return _format(_resp(True, 'AUDIT', entries=[], count=0,
+                             capacity=_AUDIT_MAX))
+    if line == 'AUDIT' or line == 'AUDIT STATUS':
+        entries = _audit_get(10)
+        return _format(_resp(True, 'AUDIT', entries=entries,
+                             count=len(_audit_log), capacity=_AUDIT_MAX))
+    if line.startswith('AUDIT '):
+        try:
+            n = int(line[6:].strip())
+        except Exception:
+            n = 10
+        if n < 1:
+            n = 1
+        if n > _AUDIT_MAX:
+            n = _AUDIT_MAX
+        entries = _audit_get(n)
+        return _format(_resp(True, 'AUDIT', entries=entries,
+                             count=len(_audit_log), capacity=_AUDIT_MAX))
     if line == 'JSON' or line == 'JSON OFF':
         _JSON_MODE = False
         return _format(_resp(True, 'JSON', enabled=False))

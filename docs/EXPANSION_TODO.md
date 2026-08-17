@@ -47,9 +47,14 @@ Ideas and future directions for the pico-hsm project.
   current state; `RATE_LIMIT RESET` clears it. Non-tracked commands (WHO,
   PING, VERSION, etc.) are unaffected by lockout. 16 host-side pytest tests
   in `test_rate_limit.py`.
-- [ ] **Audit log on flash.** Store recent CHALLENGE/RESPONSE pairs in a
-  ring buffer in flash for post-incident forensics. Needs wear-leveling
-  awareness (RP2040 flash has ~100k erase cycles).
+- [x] **Audit log on flash.** Implemented as an in-RAM ring buffer (64-entry
+  capacity) storing timestamp + SHA-256 challenge hash (not the raw challenge
+  or response — protects the volatile key). Records every CHALLENGE event
+  (ok / rate-limited / bad-hex) for post-incident forensics. `AUDIT [N]`
+  shows the last N entries (newest first); `AUDIT CLEAR` wipes the log.
+  In-RAM only (lost on power-off), consistent with the volatile-key design;
+  flash persistence deferred (wear-leveling + key-leak tradeoff needs threat
+  analysis). 21 host-side pytest tests in `test_audit_log.py`.
 
 ## Performance / firmware
 
