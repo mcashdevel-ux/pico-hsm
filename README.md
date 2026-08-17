@@ -271,7 +271,9 @@ pico-hsm/
 │   └── trng_stats.py  # TRNG statistical test suite (monobit/runs/chi-square)
 ├── tests/             # pytest integration tests (skip if no board)
 │   ├── conftest.py    # session-scoped PicoHSM fixture + skip logic
-│   └── test_hsm.py    # 17 tests across 7 command classes
+│   ├── test_hsm.py    # 17 tests across 7 command classes
+│   ├── test_hsm_aes_host.py  # 15 tests: AES + TRNG commands (serial)
+│   └── test_hsm_aes.py      # mpremote script (runs on Pico, not pytest)
 ├── docs/
 │   └── TEST_RESULTS.md
 ├── pytest.ini
@@ -395,15 +397,17 @@ The repo includes a pytest integration suite in `tests/`:
 python3 -m pytest -v
 ```
 
-The 17 tests cover all protocol commands — PING (returns int, increasing),
+The 32 tests cover all protocol commands — PING (returns int, increasing),
 WHO (format with DEVICE + FINGERPRINT, device ID stability, fingerprint
 stability), CHALLENGE (length, determinism, distinct inputs, hex-string
 input), SEED (length, non-determinism, range errors), VERSION, HELP, and
-error handling (unknown command, bad seed count).
+error handling (unknown command, bad seed count), plus AES (key fingerprint
+stability, encrypt/decrypt round-trip, CTR mode round-trip, error cases)
+and TRNG status/reprofile/watchdog commands.
 
-Tests connect to a real Pico via `$PICO_HSM_PORT` (default `/dev/ttyACM0`).
-If no board is detected, all tests are **skipped** automatically — the suite
-can run in CI without hardware.
+Tests connect to a real Pico via `$PICO_HSM_PORT` (auto-detected on Linux,
+macOS, and Windows). If no board is detected, all tests are **skipped**
+automatically — the suite can run in CI without hardware.
 
 ## Verified results
 
@@ -417,6 +421,7 @@ test record, including:
 - **NIST SP 800-22** deep suite (9 tests) — **9/9 pass** at α=0.01 on a
   12,800-byte sample, for both the original and the new DRBG pipeline.
 - 17/17 pytest integration tests pass against real hardware.
+- 32 total tests (17 core + 15 AES/TRNG); all skip gracefully without a board.
 - Chip ID stable across reboots (e6605481db5f6734); fingerprint changes per boot.
 
 ## Applications
@@ -510,11 +515,11 @@ cannot offer:
 
 Future improvements, roughly ordered by value-to-effort ratio:
 
-- **SHA-256 in native C.** Currently the native module handles only the
-  ADC→health→VN-debias hot path; the HMAC-DRBG / SHA-256 condensing still runs
-  in Python. Moving SHA-256 into C (or using the RP2040's hardware SHA-256 if
-  available in the firmware build) would speed up `key256()` and `raw_entropy()`
-  further.
+- ~~**SHA-256 in native C.**~~ ✅ Done (v1.6.2): `trng_native.seed()` runs the
+  full pipeline — ADC → health → VN debias → SHA-256 → HMAC-DRBG — entirely in
+  C. `raw_entropy()` calls it directly, eliminating the Python HMAC overhead
+  (~26 ms / 35% of `raw_entropy(256)`). Falls back to Python DRBG if the native
+  module is unavailable.
 - **Ring-oscillator entropy source.** The RP2040 has no dedicated TRNG, but
   multiple ring oscillators can be instantiated from unused GPIO pins and
   sampled as an independent entropy source, providing source diversity beyond
@@ -538,6 +543,25 @@ Future improvements, roughly ordered by value-to-effort ratio:
   source failure cannot silently weaken the key.
 
 ## Changelog
+
+### v1.6.2
+
+- **Native C DRBG fast path.** `raw_entropy()` now calls
+  `trng_native.seed()` directly when the native module is available, running
+  the full pipeline (ADC → health → VN debias → HMAC-DRBG) in C. Eliminates
+  the ~26 ms Python HMAC overhead per `raw_entropy(256)` call (35% of total).
+  Falls back to Python DRBG if the native module is unavailable.
+- **Non-blocking serial client.** Fixed `hsm_client._send()` — was blocking
+  5 s per command due to `serial.Serial(timeout=5)`. Now uses `timeout=1` +
+  `in_waiting` non-blocking polling. Full demo completes in <30 s (was timing
+  out).
+- **AES pytest suite.** Added 15 tests for AES_ENC/AES_DEC/AES_CTR/AES_KEY
+  and TRNG commands via the serial protocol (`test_hsm_aes_host.py`).
+- **Cross-platform port detection.** `hsm_client._detect_port()` auto-detects
+  the serial port on Linux, macOS, and Windows.
+- **GitHub Actions CI.** Pytest (skips without hardware) + cppcheck lint.
+- **Stale version check fix.** `test_hsm_aes.py` hardcoded v1.5.0; updated to
+  v1.6.x.
 
 ### v1.6.1
 
