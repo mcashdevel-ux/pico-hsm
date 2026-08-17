@@ -176,6 +176,7 @@ either `bytes` or a hex string; `seed(n)` returns raw bytes (1–256).
   | `CHALLENGE <hex>` | `RESPONSE <hex HMAC-SHA256(key, challenge)>`      |
   | `SEED <n>`        | `SEED <hex>` — *n* raw TRNG bytes (1–256)         |
   | `JSON [ON|OFF]`   | `OK json on|off` — toggle JSON output mode        |
+  | `RATE_LIMIT [STATUS|RESET]` | `RATE_LIMIT OK|LOCKED ...` — rate limiter |
   | `HELP`            | `COMMANDS <space-separated command list>`         |
   | `VERSION`         | `VERSION pico-hsm/<ver> micropython-<ver>`        |
 
@@ -281,6 +282,7 @@ pico-hsm/
 │   ├── test_hsm_aes_host.py  # 15 tests: AES + TRNG commands (serial)
 │   ├── test_nist_health.py   # 13 NIST 90B tests (no hardware needed)
 │   ├── test_json_mode.py    # 17 JSON mode tests (no hardware needed)
+│   ├── test_rate_limit.py   # 16 rate limiter tests (no hardware needed)
 │   └── test_hsm_aes.py       # mpremote script (runs on Pico, not pytest)
 ├── docs/
 │   └── TEST_RESULTS.md
@@ -405,7 +407,7 @@ The repo includes a pytest integration suite in `tests/`:
 python3 -m pytest -v
 ```
 
-The 62 tests cover all protocol commands — PING (returns int, increasing),
+The 78 tests cover all protocol commands — PING (returns int, increasing),
 WHO (format with DEVICE + FINGERPRINT, device ID stability, fingerprint
 stability), CHALLENGE (length, determinism, distinct inputs, hex-string
 input), SEED (length, non-determinism, range errors), VERSION, HELP, and
@@ -429,7 +431,7 @@ test record, including:
 - **NIST SP 800-22** deep suite (9 tests) — **9/9 pass** at α=0.01 on a
   12,800-byte sample, for both the original and the new DRBG pipeline.
 - 17/17 pytest integration tests pass against real hardware.
-- 62 total tests (17 core + 15 AES/TRNG + 13 NIST + 17 JSON); 30 run without hardware, 32 skip without a board.
+- 78 total tests (17 core + 15 AES/TRNG + 13 NIST + 17 JSON + 16 rate-limit); 46 run without hardware, 32 skip without a board.
 - Chip ID stable across reboots (e6605481db5f6734); fingerprint changes per boot.
 
 ## Applications
@@ -554,6 +556,12 @@ Future improvements, roughly ordered by value-to-effort ratio:
 
 ### v1.6.3
 
+- **Rate limiting / lockout.** Added a sliding-window rate limiter on
+  CHALLENGE and SEED endpoints. Tracks request timestamps in a 10-second
+  window; if more than 10 requests arrive, enters a lockout with exponential
+  backoff (2s base, doubling, capped at 60s). `RATE_LIMIT STATUS` shows
+  current state; `RATE_LIMIT RESET` clears it. Non-tracked commands (WHO,
+  PING, etc.) are unaffected. 16 host-side pytest tests in `test_rate_limit.py`.
 - **JSON output mode.** Added `JSON ON` / `JSON OFF` commands that toggle
   JSON output mode. When enabled, all responses are JSON objects
   (`{"ok": true, "cmd": "PING", "ts": 12345}`) instead of text lines, for

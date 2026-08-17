@@ -47,7 +47,7 @@ _COMMANDS = ('WHO', 'PING', 'CHALLENGE <hex>', 'SEED <n>',
              'AES_ENC <hex32>', 'AES_DEC <hex32>',
              'AES_CTR <hex_nonce32> <hex_data>', 'AES_KEY',
              'TRNG', 'TRNG_REPROFILE', 'TRNG_WATCHDOG [ON|OFF|<ms>]',
-             'JSON [ON|OFF]', 'HELP', 'VERSION')
+             'RATE_LIMIT [STATUS|RESET]', 'JSON [ON|OFF]', 'HELP', 'VERSION')
 
 _JSON_MODE = False
 
@@ -96,6 +96,14 @@ def _format(resp):
             "DECLINING" if resp["trend_declining"] else "stable"))
     if cmd == "JSON":
         return "OK json " + ("on" if resp["enabled"] else "off")
+    if cmd == "RATE_LIMIT":
+        s = resp["status"]
+        if s["lockout_active"]:
+            return ("RATE_LIMIT LOCKED remaining=%dms lockout=%dms requests=%d/%d window=%dms" % (
+                s["lockout_remaining_ms"], s["current_lockout_ms"],
+                s["requests_in_window"], s["max_per_window"], s["window_ms"]))
+        return ("RATE_LIMIT OK requests=%d/%d window=%dms" % (
+            s["requests_in_window"], s["max_per_window"], s["window_ms"]))
     if cmd == "VERSION":
         return "VERSION " + resp["version"] + " micropython-" + resp["mpy"]
     if cmd == "HELP":
@@ -121,12 +129,86 @@ def _parse_hex(hx):
     except Exception:
         return None
 
+# ── Rate limiting / lockout ─────────────────────────────────────────────── #
+# Sliding-window rate limiter on CHALLENGE and SEED to slow brute-force
+# attacks. Tracks recent request timestamps; if the count in the window
+# exceeds the threshold, enters a lockout with exponential backoff.
+_RATE_WINDOW_MS = 10000        # sliding window length
+_RATE_MAX_IN_WINDOW = 10       # max requests per window before lockout
+_RATE_LOCKOUT_BASE_MS = 2000   # base lockout (doubles each violation)
+_RATE_LOCKOUT_MAX_MS = 60000   # cap at 60 seconds
+_RATE_TRACK_CMDS = ('CHALLENGE', 'SEED')
+
+_rate_timestamps = []          # recent request ticks_ms
+_rate_lockout_until = 0        # ticks_ms when lockout expires
+_rate_lockout_ms = 0           # current lockout duration (for backoff)
+
+
+def _rate_check(cmd):
+    """Check rate limit for a command. Returns (ok, retry_after_ms)."""
+    global _rate_lockout_until, _rate_lockout_ms
+    now = time.ticks_ms()
+    # If in lockout, reject
+    if _rate_lockout_until > 0:
+        remaining = time.ticks_diff(_rate_lockout_until, now)
+        if remaining > 0:
+            return False, remaining
+        # Lockout expired — reset
+        _rate_lockout_until = 0
+        _rate_lockout_ms = 0
+    # Prune timestamps outside the window
+    cutoff = time.ticks_add(now, -_RATE_WINDOW_MS)
+    _rate_timestamps[:] = [t for t in _rate_timestamps
+                           if time.ticks_diff(t, cutoff) > 0]
+    # Check count
+    if len(_rate_timestamps) >= _RATE_MAX_IN_WINDOW:
+        # Enter lockout with exponential backoff
+        if _rate_lockout_ms == 0:
+            _rate_lockout_ms = _RATE_LOCKOUT_BASE_MS
+        else:
+            _rate_lockout_ms = min(_rate_lockout_ms * 2, _RATE_LOCKOUT_MAX_MS)
+        _rate_lockout_until = time.ticks_add(now, _rate_lockout_ms)
+        _rate_timestamps[:] = []  # reset window
+        return False, _rate_lockout_ms
+    # Record this request
+    _rate_timestamps.append(now)
+    return True, 0
+
+
+def _rate_status():
+    """Return rate limiter status dict."""
+    now = time.ticks_ms()
+    remaining = 0
+    if _rate_lockout_until > 0:
+        remaining = max(0, time.ticks_diff(_rate_lockout_until, now))
+    return {
+        'lockout_active': remaining > 0,
+        'lockout_remaining_ms': remaining,
+        'current_lockout_ms': _rate_lockout_ms,
+        'requests_in_window': len(_rate_timestamps),
+        'max_per_window': _RATE_MAX_IN_WINDOW,
+        'window_ms': _RATE_WINDOW_MS,
+    }
+
+
+def _rate_reset():
+    """Reset rate limiter state (clears lockout and history)."""
+    global _rate_lockout_until, _rate_lockout_ms
+    _rate_timestamps[:] = []
+    _rate_lockout_until = 0
+    _rate_lockout_ms = 0
+
+
 def handle(line):
     global _JSON_MODE
     line = line.strip()
     if not line:
         return ''
     if line.startswith('CHALLENGE '):
+        ok, retry = _rate_check('CHALLENGE')
+        if not ok:
+            return _format(_resp(False, 'CHALLENGE', error='rate-limited',
+                                 retry_after_ms=retry))
         ch = _parse_hex(line[10:].strip())
         if ch is None:
             return _format(_resp(False, 'CHALLENGE', error='bad-hex'))
@@ -134,6 +216,10 @@ def handle(line):
         return _format(_resp(True, 'CHALLENGE',
                              response=ubinascii.hexlify(mac).decode()))
     if line.startswith('SEED '):
+        ok, retry = _rate_check('SEED')
+        if not ok:
+            return _format(_resp(False, 'SEED', error='rate-limited',
+                                 retry_after_ms=retry))
         try:
             n = int(line[5:].strip())
         except Exception:
@@ -237,6 +323,11 @@ def handle(line):
                                      trend_declining=False))
         except Exception as e:
             return _format(_resp(False, 'TRNG_WATCHDOG', error=str(e)))
+    if line == 'RATE_LIMIT' or line == 'RATE_LIMIT STATUS':
+        return _format(_resp(True, 'RATE_LIMIT', status=_rate_status()))
+    if line == 'RATE_LIMIT RESET':
+        _rate_reset()
+        return _format(_resp(True, 'RATE_LIMIT', status=_rate_status()))
     if line == 'JSON' or line == 'JSON OFF':
         _JSON_MODE = False
         return _format(_resp(True, 'JSON', enabled=False))

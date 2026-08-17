@@ -40,9 +40,13 @@ Ideas and future directions for the pico-hsm project.
 - [ ] **Encrypted serial protocol.** The current protocol is plaintext.
   Add a transport-layer encryption (e.g., X3DH + AES-CTR using the Pico's
   AES module) so challenges and responses are confidential on the wire.
-- [ ] **Rate limiting / lockout.** Add a failed-attempt counter with
-  exponential backoff or a cooldown period to slow brute-force attacks
-  on the CHALLENGE endpoint.
+- [x] **Rate limiting / lockout.** Added a sliding-window rate limiter on
+  CHALLENGE and SEED endpoints. Tracks request timestamps in a 10-second
+  window; if more than 10 requests arrive, enters a lockout with exponential
+  backoff (2s base, doubling, capped at 60s). `RATE_LIMIT STATUS` shows
+  current state; `RATE_LIMIT RESET` clears it. Non-tracked commands (WHO,
+  PING, VERSION, etc.) are unaffected by lockout. 16 host-side pytest tests
+  in `test_rate_limit.py`.
 - [ ] **Audit log on flash.** Store recent CHALLENGE/RESPONSE pairs in a
   ring buffer in flash for post-incident forensics. Needs wear-leveling
   awareness (RP2040 flash has ~100k erase cycles).
