@@ -48,7 +48,8 @@ _COMMANDS = ('WHO', 'PING', 'CHALLENGE <hex>', 'SEED <n>',
              'AES_CTR <hex_nonce32> <hex_data>', 'AES_KEY',
              'TRNG', 'TRNG_REPROFILE', 'TRNG_WATCHDOG [ON|OFF|<ms>]',
              'RATE_LIMIT [STATUS|RESET]', 'JSON [ON|OFF]',
-             'AUDIT [N|CLEAR]', 'HELP', 'VERSION')
+             'AUDIT [N|CLEAR]', 'ENC [ON <hex>|OFF|STATUS]',
+             'HELP', 'VERSION')
 
 _JSON_MODE = False
 
@@ -114,6 +115,14 @@ def _format(resp):
             lines.append("  %s %s ch=%s %s" % (
                 e["ts"], e["cmd"], e["ch_hash"], e["result"]))
         return "\n".join(lines)
+    if cmd == "ENC":
+        s = resp.get("status", {})
+        if s.get("active"):
+            return "ENC ACTIVE counter=%d rx_counter=%d" % (
+                s["tx_counter"], s["rx_counter"])
+        return "ENC OFF"
+    if cmd == "ENC_MSG":
+        return "ENC_MSG %d %s" % (resp["counter"], resp["response"])
     if cmd == "VERSION":
         return "VERSION " + resp["version"] + " micropython-" + resp["mpy"]
     if cmd == "HELP":
@@ -264,8 +273,78 @@ def _audit_clear():
     _audit_head = 0
 
 
+# ── Encrypted serial protocol (AES-CTR transport) ─────────────────────── #
+# After ENC ON <nonce>, all subsequent commands are encrypted with AES-CTR
+# using a session key derived from the challenge-response exchange:
+#
+#   1. Host sends CHALLENGE <nonce> → gets RESPONSE <hmac(key, nonce)>
+#   2. session_key = SHA-256(b"enc-session:" + nonce + hmac_response)
+#   3. Host sends ENC ON <nonce_hex> → Pico derives the same session_key
+#   4. In encrypted mode:
+#      Host → Pico:  ENC_MSG <counter> <ciphertext_hex>
+#      Pico → Host:  ENC_RESP <counter> <ciphertext_hex>
+#      ciphertext = AES-CTR(session_key, counter_as_nonce, plaintext)
+#   5. ENC OFF exits encrypted mode
+#
+# Security properties:
+#   ✅ Confidentiality against late-joining eavesdroppers (missed handshake)
+#   ✅ Replay protection (counter tracked, replays rejected)
+#   ❌ Confidentiality against from-start eavesdroppers (saw the handshake)
+#   ❌ Message authentication (session key is derivable from observed traffic)
+#
+# For full confidentiality against a from-start eavesdropper, a pre-shared
+# key or asymmetric key exchange (ECDH) would be needed — both require
+# either flash storage (breaks volatile-key design) or ECC hardware (RP2040
+# lacks it). This is a pragmatic partial improvement for the USB CDC threat
+# model (physical access to the cable).
+_ENC_SESSION_KEY = None
+_ENC_ACTIVE = False
+_ENC_COUNTER = 0
+_ENC_LAST_RX_COUNTER = -1  # -1 = no message received yet
+
+
+def _enc_derive_session_key(nonce_bytes):
+    """Derive a session key from a challenge nonce and the volatile key.
+
+    session_key = SHA-256(b"enc-session:" + nonce + hmac(key, nonce))
+    The host can compute the same key because it received hmac(key, nonce)
+    from the CHALLENGE response. The Pico recomputes hmac(key, nonce) here.
+    """
+    hmac_resp = _hmac_sha256(_KEY, nonce_bytes)
+    return hashlib.sha256(b'enc-session:' + nonce_bytes + hmac_resp).digest()
+
+
+def _enc_ctr_nonce(counter):
+    """Build a 16-byte AES-CTR nonce from a message counter (big-endian)."""
+    return counter.to_bytes(16, 'big')
+
+
+def _enc_encrypt(plaintext_bytes, counter):
+    """AES-CTR encrypt the plaintext using the session key."""
+    if _aes is None or _ENC_SESSION_KEY is None:
+        return None
+    rk = _aes.expand_key(_ENC_SESSION_KEY)
+    nonce = _enc_ctr_nonce(counter)
+    return _aes.ctr_xcrypt(rk, nonce, plaintext_bytes)
+
+
+def _enc_decrypt(ciphertext_bytes, counter):
+    """AES-CTR decrypt (identical to encrypt for CTR mode)."""
+    return _enc_encrypt(ciphertext_bytes, counter)
+
+
+def _enc_reset():
+    """Clear encrypted session state."""
+    global _ENC_SESSION_KEY, _ENC_ACTIVE, _ENC_COUNTER, _ENC_LAST_RX_COUNTER
+    _ENC_SESSION_KEY = None
+    _ENC_ACTIVE = False
+    _ENC_COUNTER = 0
+    _ENC_LAST_RX_COUNTER = -1
+
+
 def handle(line):
     global _JSON_MODE
+    global _ENC_SESSION_KEY, _ENC_ACTIVE, _ENC_COUNTER, _ENC_LAST_RX_COUNTER
     line = line.strip()
     if not line:
         return ''
@@ -416,6 +495,67 @@ def handle(line):
         entries = _audit_get(n)
         return _format(_resp(True, 'AUDIT', entries=entries,
                              count=len(_audit_log), capacity=_AUDIT_MAX))
+    # ── Encrypted transport ──
+    if line == 'ENC OFF':
+        _enc_reset()
+        return _format(_resp(True, 'ENC', status={'active': False}))
+    if line == 'ENC' or line == 'ENC STATUS':
+        return _format(_resp(True, 'ENC', status={
+            'active': _ENC_ACTIVE,
+            'tx_counter': _ENC_COUNTER,
+            'rx_counter': _ENC_LAST_RX_COUNTER,
+        }))
+    if line.startswith('ENC ON'):
+        if _aes is None:
+            return _format(_resp(False, 'ENC', error='no-aes-module'))
+        parts = line.split(None, 2)
+        if len(parts) < 3:
+            return _format(_resp(False, 'ENC', error='usage: ENC ON <hex_nonce>'))
+        nonce = _parse_hex(parts[2])
+        if nonce is None:
+            return _format(_resp(False, 'ENC', error='bad-hex'))
+        if len(nonce) < 8:
+            return _format(_resp(False, 'ENC', error='nonce-too-short'))
+        _ENC_SESSION_KEY = _enc_derive_session_key(nonce)
+        _ENC_ACTIVE = True
+        _ENC_COUNTER = 0
+        _ENC_LAST_RX_COUNTER = -1
+        return _format(_resp(True, 'ENC', status={
+            'active': True, 'tx_counter': 0, 'rx_counter': -1}))
+    if line.startswith('ENC_MSG '):
+        if not _ENC_ACTIVE:
+            return _format(_resp(False, 'ENC_MSG', error='not-active'))
+        if _aes is None:
+            return _format(_resp(False, 'ENC_MSG', error='no-aes-module'))
+        parts = line[8:].strip().split(None, 1)
+        if len(parts) < 2:
+            return _format(_resp(False, 'ENC_MSG',
+                                 error='usage: ENC_MSG <counter> <hex_ct>'))
+        try:
+            rx_counter = int(parts[0])
+        except Exception:
+            return _format(_resp(False, 'ENC_MSG', error='bad-counter'))
+        if rx_counter <= _ENC_LAST_RX_COUNTER:
+            return _format(_resp(False, 'ENC_MSG', error='replay-detected'))
+        ct = _parse_hex(parts[1])
+        if ct is None:
+            return _format(_resp(False, 'ENC_MSG', error='bad-hex'))
+        pt = _enc_decrypt(ct, rx_counter)
+        if pt is None:
+            return _format(_resp(False, 'ENC_MSG', error='decrypt-failed'))
+        _ENC_LAST_RX_COUNTER = rx_counter
+        inner_cmd = pt.decode('utf-8', 'replace').strip()
+        # Execute the decrypted command, then encrypt the response
+        inner_resp = handle(inner_cmd)
+        resp_bytes = inner_resp.encode('utf-8')
+        tx_counter = _ENC_COUNTER
+        _ENC_COUNTER += 1
+        enc_resp = _enc_encrypt(resp_bytes, tx_counter)
+        if enc_resp is None:
+            return _format(_resp(False, 'ENC_MSG', error='encrypt-failed'))
+        return _format(_resp(True, 'ENC_MSG',
+                             counter=tx_counter,
+                             response=ubinascii.hexlify(enc_resp).decode()))
     if line == 'JSON' or line == 'JSON OFF':
         _JSON_MODE = False
         return _format(_resp(True, 'JSON', enabled=False))

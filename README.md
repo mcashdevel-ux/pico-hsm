@@ -178,6 +178,8 @@ either `bytes` or a hex string; `seed(n)` returns raw bytes (1–256).
   | `JSON [ON|OFF]`   | `OK json on|off` — toggle JSON output mode        |
   | `RATE_LIMIT [STATUS|RESET]` | `RATE_LIMIT OK|LOCKED ...` — rate limiter |
   | `AUDIT [N|CLEAR]` | `AUDIT entries=N/CAP ...` — challenge audit log     |
+  | `ENC [ON <hex>|OFF|STATUS]` | `ENC ACTIVE|OFF ...` — transport encryption |
+  | `ENC_MSG <ctr> <hex_ct>` | `ENC_MSG <ctr> <hex_ct>` — encrypted command  |
   | `HELP`            | `COMMANDS <space-separated command list>`         |
   | `VERSION`         | `VERSION pico-hsm/<ver> micropython-<ver>`        |
 
@@ -285,6 +287,7 @@ pico-hsm/
 │   ├── test_json_mode.py    # 17 JSON mode tests (no hardware needed)
 │   ├── test_rate_limit.py   # 16 rate limiter tests (no hardware needed)
 │   ├── test_audit_log.py   # 21 audit log tests (no hardware needed)
+│   ├── test_enc_protocol.py # 26 encrypted transport tests (no hardware)
 │   └── test_hsm_aes.py       # mpremote script (runs on Pico, not pytest)
 ├── docs/
 │   └── TEST_RESULTS.md
@@ -409,7 +412,7 @@ The repo includes a pytest integration suite in `tests/`:
 python3 -m pytest -v
 ```
 
-The 99 tests cover all protocol commands — PING (returns int, increasing),
+The 125 tests cover all protocol commands — PING (returns int, increasing),
 WHO (format with DEVICE + FINGERPRINT, device ID stability, fingerprint
 stability), CHALLENGE (length, determinism, distinct inputs, hex-string
 input), SEED (length, non-determinism, range errors), VERSION, HELP, and
@@ -433,7 +436,7 @@ test record, including:
 - **NIST SP 800-22** deep suite (9 tests) — **9/9 pass** at α=0.01 on a
   12,800-byte sample, for both the original and the new DRBG pipeline.
 - 17/17 pytest integration tests pass against real hardware.
-- 99 total tests (17 core + 15 AES/TRNG + 13 NIST + 17 JSON + 16 rate-limit + 21 audit); 67 run without hardware, 32 skip without a board.
+- 125 total tests (17 core + 15 AES/TRNG + 13 NIST + 17 JSON + 16 rate-limit + 21 audit + 26 enc-protocol); 93 run without hardware, 32 skip without a board.
 - Chip ID stable across reboots (e6605481db5f6734); fingerprint changes per boot.
 
 ## Applications
@@ -558,6 +561,15 @@ Future improvements, roughly ordered by value-to-effort ratio:
 
 ### v1.6.3
 
+- **Encrypted serial protocol.** AES-CTR transport encryption layer.
+  After a challenge-response exchange, both sides derive a session key
+  (`SHA-256(b"enc-session:" + nonce + hmac(key, nonce))`). `ENC ON
+  <nonce_hex>` activates the session; subsequent commands use
+  `ENC_MSG <counter> <ciphertext_hex>` → `ENC_MSG <counter>
+  <ciphertext_hex>` with AES-CTR. Replay protection via monotonically-
+  increasing counters. `ENC OFF` exits; `ENC STATUS` shows state.
+  Confidentiality against late-joining eavesdroppers; replay-protected.
+  26 host-side pytest tests in `test_enc_protocol.py`.
 - **Audit log.** In-RAM ring buffer (64-entry capacity) records every
   CHALLENGE event (ok / rate-limited / bad-hex) with timestamp + SHA-256
   challenge hash (not the raw challenge/response — protects the volatile

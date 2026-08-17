@@ -37,9 +37,18 @@ Ideas and future directions for the pico-hsm project.
   element over I2C for non-extractable keys, true device authentication
   (not just chip ID), and certified RNG. This would close the anti-spoofing
   gap documented in the README.
-- [ ] **Encrypted serial protocol.** The current protocol is plaintext.
-  Add a transport-layer encryption (e.g., X3DH + AES-CTR using the Pico's
-  AES module) so challenges and responses are confidential on the wire.
+- [x] **Encrypted serial protocol.** Added an AES-CTR transport encryption
+  layer. After a challenge-response exchange, the host derives a session key
+  (`SHA-256(b"enc-session:" + nonce + hmac(key, nonce))`) and sends
+  `ENC ON <nonce_hex>`; the Pico derives the same key. Subsequent commands
+  use `ENC_MSG <counter> <ciphertext_hex>` → `ENC_MSG <counter> <ciphertext_hex>`
+  with AES-CTR. Replay protection via monotonically-increasing counters.
+  `ENC OFF` exits encrypted mode; `ENC STATUS` shows current state.
+  Security properties: ✅ confidentiality against late-joining eavesdroppers
+  (missed the handshake), ✅ replay protection, ❌ confidentiality against
+  from-start eavesdroppers (saw the plaintext handshake — full confidentiality
+  requires ECDH or a pre-shared key, both incompatible with the volatile-key
+  design on RP2040). 26 host-side pytest tests in `test_enc_protocol.py`.
 - [x] **Rate limiting / lockout.** Added a sliding-window rate limiter on
   CHALLENGE and SEED endpoints. Tracks request timestamps in a 10-second
   window; if more than 10 requests arrive, enters a lockout with exponential
