@@ -630,11 +630,22 @@ def raw_entropy(nbytes):
 
     Each call reseeds with fresh TRNG entropy (backtracking resistance).
     Raises RuntimeError if the TRNG is unhealthy after adaptive re-profiling.
+
+    When the native C module is available, the entire pipeline (ADC collect
+    → health gate → VN debias → HMAC-DRBG) runs in C for maximum speed.
     """
     _init()
     _ensure_profiled()
     if nbytes < 1 or nbytes > 256:
         raise ValueError("count must be 1..256")
+    # Native C fast path: full pipeline including DRBG in C
+    if _has_native:
+        bit_mask = _bits_to_mask()
+        try:
+            return trng_native.seed(nbytes, bit_mask)
+        except Exception:
+            pass  # fall through to Python path
+    # Python fallback: fresh_entropy + HMAC-DRBG
     seed = _fresh_entropy(32)
     drbg = HMACDRBG(seed)
     out = bytearray()
