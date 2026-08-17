@@ -20,7 +20,7 @@
 
 > A **hardware True Random Number Generator (TRNG)** and a **physical-presence
 > HSM** with **persistent device identity** on a Raspberry Pi Pico (RP2040),
-> in under 300 lines of MicroPython.
+> in MicroPython.
 
 The RP2040 is not used as a compute offload (a host PC is ~100× faster). It is
 used for the three things a normal Linux host *cannot* do:
@@ -84,7 +84,7 @@ raw entropy (32 bytes): 47de541fb37c91f30a6c594ade8451748c195b92ba61ac134074d47e
 deterministic (same challenge -> same HMAC)? True
 
 === VERSION ===
-VERSION pico-hsm/1.2.0 micropython-3.4.0
+VERSION pico-hsm/1.6.3 micropython-3.4.0
 ```
 
 The `WHO` response now includes a **DEVICE** field — the factory-programmed
@@ -112,7 +112,7 @@ with PicoHSM("/dev/ttyACM0") as hsm:
     print(hsm.ping())                    # tick count (int)
     mac = hsm.challenge(b"deadbeef")     # -> 32-byte HMAC-SHA256 (bytes)
     raw = hsm.seed(32)                   # -> 32 bytes of raw TRNG entropy
-    print(hsm.version())                 # VERSION pico-hsm/1.2.0 ...
+    print(hsm.version())                 # VERSION pico-hsm/1.6.3 ...
     print(hsm.help())                    # COMMANDS WHO PING ...
 ```
 
@@ -141,6 +141,14 @@ either `bytes` or a hex string; `seed(n)` returns raw bytes (1–256).
     It is reseeded with fresh TRNG entropy on every generation, giving
     backtracking resistance — compromise of one key never reveals earlier or
     later keys. This replaces the original naive SHA-256 condense.
+  - **Continuous health testing (NIST SP 800-90B §4.4):** the repetition-count
+    and adaptive-proportion tests run on every entropy block (in the health
+    gate) and in the core-1 watchdog's lightweight check. The repetition-count
+    test detects stuck sources (excessive runs of identical samples); the
+    adaptive-proportion test tracks a specific value through a 512-sample
+    window and fails if it appears >12 times (NIST α=2⁻²⁰). Results are
+    reported in `TRNG` status as `WATCHDOG_NIST rc_max=X/Y ap_max=X/Y
+    healthy=YES`.
 - **Validated:** the source passes the full **NIST SP 800-22** statistical
   suite (9/9 tests at α=0.01) on a 12,800-byte sample — see
   [Verified results](#verified-results). The original (pre-DRBG) pipeline also
@@ -178,6 +186,11 @@ either `bytes` or a hex string; `seed(n)` returns raw bytes (1–256).
   | `CHALLENGE <hex>` | `RESPONSE <hex HMAC-SHA256(key, challenge)>`      |
   | `SEED <n>`        | `SEED <hex>` — *n* raw TRNG bytes (1–256)         |
   | `SEED_STREAM <total> [<chunk>]` | `SEED_STREAM ...` — bulk entropy (1–8192B) |
+  | `AES_ENC <hex32>` | `AES_ENC <hex32>` — encrypt one 16-byte block     |
+  | `AES_DEC <hex32>` | `AES_DEC <hex32>` — decrypt one 16-byte block     |
+  | `AES_CTR <hex_nonce32> <hex_data>` | `AES_CTR <hex_data>` — CTR mode   |
+  | `AES_KEY`         | `AES_KEY_FP <fingerprint>` — AES key fingerprint  |
+  | `TRNG`            | `TRNG <status>` — health, entropy, watchdog       |
   | `JSON [ON|OFF]`   | `OK json on|off` — toggle JSON output mode        |
   | `RATE_LIMIT [STATUS|RESET]` | `RATE_LIMIT OK|LOCKED ...` — rate limiter |
   | `AUDIT [N|CLEAR]` | `AUDIT entries=N/CAP ...` — challenge audit log     |
@@ -203,6 +216,25 @@ either `bytes` or a hex string; `seed(n)` returns raw bytes (1–256).
   entropy on every call), hex-encoded. This is the same entropy source and
   extractor used for key minting — useful for seeding host-side CSPRNGs or
   statistical testing.
+- `SEED_STREAM <total> [<chunk_size>]` is the bulk variant: up to 8192 bytes
+  in one call, split into chunks (default 64 bytes, configurable 1–256). A
+  single call counts as one rate-limiter request, enabling high-throughput
+  entropy retrieval.
+- **AES operations** (`AES_ENC`, `AES_DEC`, `AES_CTR`, `AES_KEY`) provide
+  single-block and CTR-mode encryption using a volatile AES key (separate
+  from the HMAC key), minted from the same TRNG. `AES_KEY` returns the key's
+  fingerprint (not the key itself).
+- **Rate limiting** (`RATE_LIMIT`) applies a sliding 10-second window to
+  CHALLENGE, SEED, and SEED_STREAM; exceeding 10 requests triggers lockout
+  with exponential backoff (2s base, doubling, capped at 60s).
+- **Audit log** (`AUDIT`) records every CHALLENGE event in a 64-entry ring
+  buffer with timestamp and challenge hash (not the raw challenge, to protect
+  the volatile key). In-RAM only — lost on power-off, consistent with the
+  volatile-key design.
+- **Encrypted transport** (`ENC ON`, `ENC_MSG`, `ENC OFF`) wraps the protocol
+  in AES-CTR with a session key derived from the challenge-response exchange.
+  Replay-protected via monotonic counters. See
+  [Threat model](docs/THREAT_MODEL.md) for the security properties.
 
 ### Host client — `host/hsm_client.py`
 
@@ -421,10 +453,14 @@ python3 -m pytest -v
 The 149 tests cover all protocol commands — PING (returns int, increasing),
 WHO (format with DEVICE + FINGERPRINT, device ID stability, fingerprint
 stability), CHALLENGE (length, determinism, distinct inputs, hex-string
-input), SEED (length, non-determinism, range errors), VERSION, HELP, and
-error handling (unknown command, bad seed count), plus AES (key fingerprint
+input), SEED (length, non-determinism, range errors), SEED_STREAM (bulk
+entropy, chunk sizes, rate limiting, JSON mode), VERSION, HELP, and error
+handling (unknown command, bad seed count), plus AES (key fingerprint
 stability, encrypt/decrypt round-trip, CTR mode round-trip, error cases)
-and TRNG status/reprofile/watchdog commands, and NIST SP 800-90B continuous health tests (repetition-count, adaptive-proportion — run without hardware).
+and TRNG status/reprofile/watchdog commands, NIST SP 800-90B continuous
+health tests (repetition-count, adaptive-proportion), JSON output mode,
+rate limiting / lockout, audit log, and encrypted transport (AES-CTR
+session establishment, encrypt/decrypt round-trips, replay protection).
 
 Tests connect to a real Pico via `$PICO_HSM_PORT` (auto-detected on Linux,
 macOS, and Windows). If no board is detected, all tests are **skipped**
@@ -441,8 +477,10 @@ test record, including:
 - TRNG statistical tests (monobit, runs, chi-square) — all pass on 4096 bytes.
 - **NIST SP 800-22** deep suite (9 tests) — **9/9 pass** at α=0.01 on a
   12,800-byte sample, for both the original and the new DRBG pipeline.
-- 17/17 pytest integration tests pass against real hardware.
-- 149 total tests (17 core + 15 AES/TRNG + 13 NIST + 17 JSON + 16 rate-limit + 21 audit + 26 enc-protocol + 24 seed-stream); 117 run without hardware, 32 skip without a board.
+- 17/17 hardware integration tests pass against real hardware (v1.1.0);
+  149 total tests (17 core + 15 AES/TRNG + 13 NIST + 17 JSON + 16 rate-limit
+  + 21 audit + 26 enc-protocol + 24 seed-stream); 117 run without hardware,
+  32 skip without a board.
 - Chip ID stable across reboots (e6605481db5f6734); fingerprint changes per boot.
 
 ## Applications
@@ -500,7 +538,8 @@ cannot offer:
 
 - **Teaching / prototyping HSM concepts.** The whole stack — entropy
   characterization, key minting, HMAC challenge/response, the physical-presence
-  security model — is under 300 lines of readable MicroPython. It is a good
+  security model — is a compact, readable MicroPython codebase (the HSM core
+  is `hsm.py`, the TRNG pipeline is `trng.py`). It is a good
   starting point for learning how real HSMs and TEEs justify their threat
   models, and for prototyping protocol ideas before committing to dedicated
   hardware.
@@ -516,13 +555,18 @@ cannot offer:
 - This is a **weak** TRNG by silicon-RNG standards — a single floating ADC pin
   is no substitute for a dedicated noise diode or a hardened TRNG IP. The
   min-entropy is measured and a safety margin is applied. The source passes the
-  full **NIST SP 800-22** suite (9/9 tests, see [Verified results](#verified-results)),
-  but it has not been through **NIST SP 800-90B** entropy-source validation,
-  and the health gate is a screen, not continuous certification. Use it for key
-  derivation / tokenization; for a certified cryptographic RNG use a validated
-  hardware entropy source.
-- The serial protocol is plaintext and unauthenticated beyond the HMAC itself;
-  pair it with a trusted transport if you need confidentiality.
+  full **NIST SP 800-22** suite (9/9 tests, see [Verified results](#verified-results)).
+  NIST SP 800-90B continuous health tests (repetition-count and
+  adaptive-proportion, §4.4) run on every entropy block and in the watchdog,
+  but the source has not been through formal **NIST SP 800-90B entropy-source
+  validation**. Use it for key derivation / tokenization; for a certified
+  cryptographic RNG use a validated hardware entropy source.
+- The serial protocol is plaintext by default; use `ENC ON <nonce_hex>` to
+  enable optional AES-CTR transport encryption (confidential against
+  late-joining eavesdroppers, replay-protected, but not authenticated and
+  not confidential against a from-start eavesdropper who saw the plaintext
+  handshake — see [Encrypted transport](docs/THREAT_MODEL.md#encrypted-transport-aes-ctr)
+  in the threat model).
 - **The chip ID is a serial number, not a secret.** Anyone with USB access can
   read `machine.unique_id()`. The device-identity check catches a casual board
   swap (attacker's own Pico, stock firmware) but not a targeted spoof (attacker
@@ -538,34 +582,29 @@ see the [Threat model](docs/THREAT_MODEL.md) and
 
 ## Roadmap & expansion TODO
 
-Future improvements, roughly ordered by value-to-effort ratio:
+Future improvements, grouped by area. See [`docs/EXPANSION_TODO.md`](docs/EXPANSION_TODO.md)
+for the full list with details.
 
-- ~~**SHA-256 in native C.**~~ ✅ Done (v1.6.2): `trng_native.seed()` runs the
-  full pipeline — ADC → health → VN debias → SHA-256 → HMAC-DRBG — entirely in
-  C. `raw_entropy()` calls it directly, eliminating the Python HMAC overhead
-  (~26 ms / 35% of `raw_entropy(256)`). Falls back to Python DRBG if the native
-  module is unavailable.
-- **Ring-oscillator entropy source.** The RP2040 has no dedicated TRNG, but
-  multiple ring oscillators can be instantiated from unused GPIO pins and
-  sampled as an independent entropy source, providing source diversity beyond
-  the single ADC noise pin.
-- **Continuous health testing (NIST SP 800-90B §4.4).** The watchdog does
-  periodic health checks, but a continuous repetition-count and adaptive
-  proportion test on every entropy block would bring the health gate closer to
-  90B certification.
-- **Secure-element support (ATECC608A).** Add an I²C-connected secure element
-  for non-extractable key storage and cryptographic device identity, enabling
-  true anti-substitution.
-- **Encrypted serial protocol.** Wrap the command/response protocol in a
-  lightweight AEAD (e.g. ChaCha20-Poly1305) with an ephemeral session key
-  negotiated at boot, so the transport is confidential and authenticated, not
-  just plaintext-over-USB.
-- **Entropy seeding rate monitor.** Track and report the effective entropy
-  generation rate (bits/second) in the `TRNG` status output, so the operator
-  can detect if the source has degraded below the required throughput.
-- **Multi-source entropy mixing.** Combine ADC noise with a second source
-  (ring oscillator, ROsc jitter) via XOR or a hash combiner, so a single
-  source failure cannot silently weaken the key.
+**Completed (v1.6.3):**
+- ~~SHA-256 / HMAC-DRBG in native C~~ ✅ (v1.6.2)
+- ~~NIST SP 800-90B continuous health tests~~ ✅ (v1.6.3)
+- ~~JSON output mode~~ ✅ (v1.6.3)
+- ~~Rate limiting / lockout~~ ✅ (v1.6.3)
+- ~~Audit log (CHALLENGE forensics)~~ ✅ (v1.6.3)
+- ~~Encrypted serial protocol (AES-CTR)~~ ✅ (v1.6.3)
+- ~~Bulk SEED mode~~ ✅ (v1.6.3)
+- ~~Architecture diagram + threat model~~ ✅ (v1.6.3)
+
+**Remaining (require hardware or significant effort):**
+- **TRNG / entropy:** DMA ADC sampling, multiple entropy sources (ring
+  oscillator), NIST SP 800-90B formal validation, continuous health monitoring
+  in C
+- **HSM / security:** Persistent key option (encrypted in flash, opt-in),
+  secure element integration (ATECC608A over I²C)
+- **Platform:** Core 1 dedicated to TRNG, custom MicroPython firmware
+  (ROSC.RANDOM, DMA, compiled-in native modules)
+- **Interface:** USB HID interface, WebUSB support
+- **Testing:** Test the native module on hardware
 
 ## Changelog
 

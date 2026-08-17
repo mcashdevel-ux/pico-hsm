@@ -2,6 +2,13 @@
 
 Ideas and future directions for the pico-hsm project.
 
+**Progress:** 11 of 20 items completed. All code-only items that can be done
+without the physical Pico are done. Remaining items require hardware access
+(DMA, entropy sources, secure element, core pinning, custom firmware, HID,
+WebUSB) or formal validation (NIST 800-90B).
+
+See also: [Architecture](ARCHITECTURE.md), [Threat model](THREAT_MODEL.md).
+
 ## TRNG / entropy
 
 - [ ] **DMA ADC sampling.** The native C module currently polls the ADC in a
@@ -12,9 +19,10 @@ Ideas and future directions for the pico-hsm project.
   MicroPython build to enable it), the temperature sensor, or an external
   noise diode on a second ADC channel. XOR-mixing independent sources
   increases the overall min-entropy.
-- [ ] **NIST SP 800-90B validation.** The current health gate is a screen,
-  not certification. Running the source through the full 90B conditional
-  test suite would give a formal entropy estimate.
+- [ ] **NIST SP 800-90B validation.** The continuous health tests
+  (repetition-count, adaptive-proportion) are implemented but not formally
+  validated. Running the source through the full 90B validation suite would
+  give a certified entropy estimate.
 - [ ] **Continuous health monitoring in C.** The watchdog currently runs in
   Python on core 1. Moving it to C (or into the native module) would
   reduce its CPU footprint and allow tighter monitoring intervals.

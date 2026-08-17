@@ -185,7 +185,7 @@ physical attacks on a non-hardened MCU.
 |----------|--------|-------|
 | Source quality | ⚠️ Measured, not certified | H_min ≈ 3.73 bits/sample; passes NIST SP 800-22 (9/9) |
 | Continuous health monitoring | ✅ Provided | Watchdog (core 1) + NIST SP 800-90B health tests |
-| NIST SP 800-90B validation | ❌ Not done | Health gate is a screen, not certified |
+| NIST SP 800-90B validation | ❌ Not done | Continuous tests run, but not formally validated/certified |
 | Backtracking resistance | ✅ Protected | HMAC-DRBG reseeded every generation |
 
 ## Security non-claims
@@ -216,7 +216,9 @@ The following are **explicitly NOT claimed**:
 6. **This is NOT a strong TRNG by silicon-RNG standards.** A single floating
    ADC pin is no substitute for a dedicated noise diode or hardened TRNG IP.
    The min-entropy is measured with a safety margin, and the source passes
-   NIST SP 800-22, but it has not been through NIST SP 800-90B validation.
+   NIST SP 800-22. NIST SP 800-90B continuous health tests (repetition-count
+   and adaptive-proportion) run on every entropy block, but the source has not
+   been through formal NIST SP 800-90B entropy-source validation.
 
 7. **The audit log is NOT tamper-proof.** Any USB user can clear it with
    `AUDIT CLEAR`. It is a forensic aid, not a security boundary.

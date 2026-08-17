@@ -1,5 +1,10 @@
 # Test Results
 
+> **Note:** The results below were captured on real hardware during
+> development (v1.1.0–v1.6.1). The current test suite has 149 tests (117 pass
+> without hardware, 32 skip without a board). See the [Testing](../README.md#testing)
+> section of the README for the up-to-date test inventory.
+
 | | |
 |---|---|
 | **Board** | Raspberry Pi Pico (RP2040) |
