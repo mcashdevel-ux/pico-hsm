@@ -68,7 +68,7 @@ fit together.
 │  └─────────────────────────────────────────┘                │
 │  ┌─────────────────────────────────────────┐                │
 │  │  tests/ (pytest, host-side)             │                │
-│  │  117 tests, no hardware needed           │                │
+│  │  143 tests, no hardware needed           │                │
 │  └─────────────────────────────────────────┘                │
 └─────────────────────────────────────────────────────────────┘
 ```
@@ -96,7 +96,7 @@ and enters the REPL loop:
 the device ID, but does not run the REPL loop itself. This separation lets the
 test suite import `hsm` without blocking on serial I/O.
 
-State held by `hsm.py` (all in RAM, volatile):
+State held by `hsm.py` (all in RAM, volatile unless opt-in persistence is used):
 - `_KEY` — 32-byte HMAC key (minted at boot, destroyed on power-loss)
 - `_AES_KEY` / `_AES_RK` — 32-byte AES key + expanded round keys
 - `_DEGRADED` — flag if entropy source was degraded at key-mint time
@@ -104,6 +104,9 @@ State held by `hsm.py` (all in RAM, volatile):
 - Rate limiter state (sliding window of timestamps)
 - `_audit_log` — ring buffer of challenge audit entries
 - Encrypted transport state (session key, counters, active flag)
+- **Persistent key (opt-in, v1.7.0):** `pico_hsm_key.enc` — encrypted HMAC
+  key blob in flash (`PHSM` header + 32-byte AES-ECB ciphertext). Only
+  written when `KEY_STORE <pin>` is issued; loaded with `KEY_LOAD <pin>`.
 
 ### Core 1: TRNG watchdog
 
@@ -271,8 +274,14 @@ These cross-cutting concerns wrap all sensitive commands:
 ```
 
 The key material is small (< 0.5 KB total). The audit log is the largest
-state consumer. None of this persists to flash — power-loss destroys
-everything except the factory chip ID (in silicon).
+state consumer. None of this persists to flash by default — power-loss
+destroys everything except the factory chip ID (in silicon).
+
+**Exception (opt-in, v1.7.0):** if the user issues `KEY_STORE <pin>`, the
+HMAC key is encrypted (AES-ECB, PIN-derived key) and written to flash as
+`pico_hsm_key.enc` (36 bytes: 4-byte `PHSM` header + 32-byte ciphertext).
+This is the only flash-persisted secret. `KEY_ERASE` deletes it; `KEY_LOAD
+<pin>` reads and decrypts it back into RAM.
 
 ## Mermaid diagram
 
@@ -295,6 +304,7 @@ graph TB
       AUDIT["_audit_log (64 entries)"]
       RATE["rate limiter"]
       ENC["enc transport state"]
+      PERSIST["pico_hsm_key.enc<br/>(opt-in flash, v1.7.0)"]
     end
 
     HSM --> KEY
@@ -302,6 +312,7 @@ graph TB
     HSM --> AUDIT
     HSM --> RATE
     HSM --> ENC
+    HSM -->|KEY_STORE / KEY_LOAD| PERSIST
 
     TRNG["trng.py<br/>key256() / raw_entropy()"]
     HSM --> TRNG
@@ -326,7 +337,7 @@ graph TB
   subgraph Host["Host computer"]
     Client["hsm_client.py<br/>PicoHSM class"]
     Stats["trng_stats.py<br/>statistical checker"]
-    Tests["tests/<br/>117 pytest tests"]
+    Tests["tests/<br/>143 pytest tests"]
   end
 
   USB --> Client
@@ -363,3 +374,50 @@ graph TB
 
 The host never receives the key — only its fingerprint (`sha256(key)`) and the
 HMAC output. The key exists only in the Pico's RAM.
+
+## Data flow: persistent key (opt-in, v1.7.0)
+
+The persistent key feature is strictly opt-in. The default flow (above) has
+no flash component. When the user chooses to persist the key:
+
+```
+  KEY_STORE <pin>:
+    _KEY (RAM, 32B)
+      │
+      ▼
+    _derive_pin_key(pin)           1000-round iterated SHA-256
+      │                              salt = b'pico-hsm-persist-v1'
+      ▼
+    AES-ECB encrypt(_KEY, pin_key) → ciphertext (32B)
+      │
+      ▼
+    flash: pico_hsm_key.enc = b'PHSM' + ciphertext (36B)
+
+  ── Reboot Pico (RAM cleared, _KEY re-minted fresh) ──
+
+  KEY_LOAD <pin>:
+    flash: pico_hsm_key.enc
+      │
+      ▼
+    verify header == b'PHSM', len == 36
+      │
+      ▼
+    _derive_pin_key(pin)           same KDF
+      │
+      ▼
+    AES-ECB decrypt(ciphertext, pin_key) → plaintext (32B)
+      │
+      ▼
+    _KEY = plaintext               replaces volatile key in RAM
+    _DEGRADED = False
+      │
+      ▼
+    return fingerprint             host verifies it matches
+
+  KEY_ERASE:   os.remove('pico_hsm_key.enc')
+  KEY_STATUS:  persistent = os.path exists; degraded = _DEGRADED
+```
+
+**Wrong PIN:** AES-ECB has no integrity check, so decryption succeeds but
+produces a garbage key. The host can detect this: the fingerprint returned by
+`KEY_LOAD` will differ from the one returned by `KEY_STORE`.

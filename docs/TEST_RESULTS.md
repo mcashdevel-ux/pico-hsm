@@ -1,8 +1,8 @@
 # Test Results
 
 > **Note:** The results below were captured on real hardware during
-> development (v1.1.0–v1.6.1). The current test suite has 149 tests (117 pass
-> without hardware, 32 skip without a board). See the [Testing](../README.md#testing)
+> development (v1.1.0–v1.7.0). The current test suite has 186 tests (143 pass
+> without hardware, 43 skip without a board). See the [Testing](../README.md#testing)
 > section of the README for the up-to-date test inventory.
 
 | | |
@@ -328,6 +328,12 @@ tests/test_hsm_aes_host.py ............... (15 tests)
 
 Combined with 117 no-hardware tests: **149 total tests, all passing**
 (117 pass without hardware, 32 pass on hardware).
+
+> **Updated (v1.7.0):** The suite now has 186 tests total (143 no-hardware +
+> 43 hardware). The 11 new hardware tests are `TestPersistKey` in
+> `test_hsm.py`; the 26 new no-hardware tests are in `test_persist_key.py`.
+> See the [v1.7.0 section](#v170--persistent-key-flash-pin-encrypted-opt-in)
+> below for persistent-key hardware results.
 
 ### Client bug fixes
 

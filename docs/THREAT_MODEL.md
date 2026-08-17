@@ -10,10 +10,12 @@ Pico-hsm is a Raspberry Pi Pico (RP2040) running MicroPython firmware that
 provides:
 
 1. A volatile HMAC-SHA256 key for challenge-response authentication
-2. A TRNG (true random number generator) for entropy seeding
-3. A serial protocol over USB CDC for host communication
-4. Optional AES-CTR transport encryption
-5. Rate limiting, audit logging, and device identity
+2. An opt-in persistent key mode (v1.7.0) that encrypts the key with a
+   PIN and stores it in flash
+3. A TRNG (true random number generator) for entropy seeding
+4. A serial protocol over USB CDC for host communication
+5. Optional AES-CTR transport encryption
+6. Rate limiting, audit logging, and device identity
 
 This is a **hobbyist / educational HSM**, not a certified cryptographic
 module. It is not FIPS 140-2/3 validated, not Common Criteria evaluated,
@@ -24,6 +26,7 @@ and not intended for production secrets or regulated environments.
 | Asset | Location | Lifetime | Exposure |
 |-------|----------|----------|----------|
 | **HMAC key** (`_KEY`) | RP2040 RAM | Volatile (destroyed on power-loss) | Never transmitted; only `sha256(key)` fingerprint is sent |
+| **Persistent key blob** (`pico_hsm_key.enc`) | RP2040 flash | Persistent (opt-in, v1.7.0) | Encrypted (AES-ECB, PIN-derived key); never readable without PIN |
 | **AES key** (`_AES_KEY`) | RP2040 RAM | Volatile | Used for AES operations; never transmitted |
 | **Encrypted session key** | RP2040 RAM + host memory | Volatile (per-session) | Derived from HMAC key + nonce; host can compute it |
 | **Chip ID** (`machine.unique_id()`) | RP2040 silicon | Persistent (factory) | Public — anyone with USB access can read it |
@@ -98,6 +101,13 @@ or open the chip.
   public resource.
 - **Audit log tampering:** An attacker with USB access can issue `AUDIT CLEAR`.
   This is a known trade-off (the audit log is for forensics, not tamper-proofing).
+- **Persistent key brute-force (if opt-in):** If `KEY_STORE` has been used,
+  an attacker with USB access can attempt `KEY_LOAD <pin>` repeatedly. The
+  rate limiter applies to CHALLENGE/SEED, not KEY_LOAD, so there is no
+  lockout on PIN guesses. The PIN space depends on the user's choice; a
+  long PIN is required. A wrong PIN produces a garbage key (different
+  fingerprint), which the host can detect, but the device itself does not
+  reject it.
 
 ### A5: Physical access attacker (firmware modification)
 
@@ -109,6 +119,10 @@ non-secure-element design:
   key over USB, or logs all commands.
 - The attacker can read the target Pico's chip ID, then flash their own Pico
   with firmware that reports that ID — defeating the board-substitution check.
+- If a persistent key blob (`pico_hsm_key.enc`) exists in flash, the attacker
+  can copy it off and brute-force the PIN offline (the KDF is 1000-round
+  iterated SHA-256, not a memory-hard function). A long PIN is the only
+  mitigation.
 
 **Mitigation:** Use a secure element (e.g., ATECC608A) with a non-extractable
 key for cryptographic anti-substitution. The RP2040 alone cannot provide this.
@@ -124,14 +138,25 @@ physical attacks on a non-hardened MCU.
 
 ## Security properties by feature
 
-### Volatile HMAC key
+### Volatile HMAC key (default)
 
 | Property | Status | Notes |
 |----------|--------|-------|
 | Key confidentiality (no USB tap) | ✅ Protected | Key never leaves RAM; only fingerprint transmitted |
 | Key confidentiality (power-loss) | ✅ Protected | Destroyed on power-loss; cannot be recovered |
-| Key persistence across reboots | ❌ By design | Volatile by design — not a persistent key vault |
+| Key persistence across reboots | ❌ By design | Volatile by default — not a persistent key vault |
 | Backtracking resistance | ✅ Protected | HMAC-DRBG reseeded every generation; prior keys don't reveal later ones |
+
+### Persistent key (opt-in, v1.7.0)
+
+| Property | Status | Notes |
+|----------|--------|-------|
+| Key confidentiality (no flash access) | ✅ Protected | Encrypted blob in flash; PIN never stored |
+| Key persistence across reboots | ✅ Provided | `KEY_LOAD <pin>` restores the original key |
+| PIN brute-force (online, USB) | ⚠️ Partial | No lockout on KEY_LOAD; wrong PIN gives garbage key (detectable by fingerprint mismatch) |
+| PIN brute-force (offline, flash dump) | ❌ Not protected | KDF is 1000-round iterated SHA-256 (not memory-hard); flash blob can be copied and brute-forced |
+| Ciphertext integrity | ❌ Not provided | AES-ECB has no MAC; wrong PIN produces silent garbage |
+| Flash wear-out | ⚠️ Low risk | `KEY_STORE` writes 36 bytes; RP2040 flash rated ~100k erase cycles per sector |
 
 ### Challenge-response authentication
 
@@ -195,9 +220,14 @@ The following are **explicitly NOT claimed**:
 1. **This is NOT a certified HSM.** No FIPS 140, no Common Criteria, no
    NIST CAVP validation. It is an educational project.
 
-2. **This is NOT a persistent key vault.** The key is volatile and changes
-   every boot. Anything sealed with a previous boot's key cannot be
-   decrypted or verified after a reboot.
+2. **This is NOT a persistent key vault by default.** The key is volatile and
+   changes every boot. Anything sealed with a previous boot's key cannot be
+   decrypted or verified after a reboot. An **opt-in** persistent key mode
+   (`KEY_STORE <pin>`, `KEY_LOAD <pin>`, `KEY_ERASE`, `KEY_STATUS`) exists
+   (v1.7.0), but it is a convenience feature, not a hardened key vault: the
+   KDF is iterated SHA-256 (not memory-hard), AES-ECB provides no integrity
+   check, and an attacker with flash access can brute-force the PIN offline.
+   For production-grade persistent keys, use a real HSM.
 
 3. **This does NOT provide confidentiality against a from-start eavesdropper.**
    The encrypted transport protects against late-joining eavesdroppers and
@@ -233,6 +263,8 @@ The following are **explicitly NOT claimed**:
 |--------|-----------|------------|--------|
 | Key extraction via USB | A4 | Key never transmitted; fingerprint only | ✅ Protected |
 | Key recovery after power-loss | A4 | Volatile (RAM only) | ✅ Protected |
+| Persistent key flash extraction | A5 | Encrypted (AES-ECB, PIN-derived) | ⚠️ Partial (offline PIN brute-force possible) |
+| Persistent key PIN brute-force (online) | A4 | Wrong PIN gives garbage key (detectable) | ⚠️ Partial (no lockout on KEY_LOAD) |
 | Replay challenge (no enc) | A4 | Rate limiter + audit log | ⚠️ Partial |
 | Replay challenge (with enc) | A2, A4 | Monotonic counter | ✅ Protected |
 | Late-join eavesdrop | A2 | AES-CTR transport | ✅ Protected |
@@ -250,8 +282,11 @@ The following are **explicitly NOT claimed**:
 
 For users who need stronger security than pico-hsm provides:
 
-1. **Persistent keys:** Use a real HSM (YubiHSM 2, Nitrokey HSM 2) or a
-   cloud KMS. Pico-hsm deliberately cannot store persistent keys.
+1. **Persistent keys:** Pico-hsm's opt-in persistent key mode (v1.7.0) is a
+   convenience feature, not a hardened key vault — the KDF is not memory-hard,
+   there is no lockout on PIN guesses, and the flash blob can be brute-forced
+   offline. For production-grade persistent keys, use a real HSM (YubiHSM 2,
+   Nitrokey HSM 2) or a cloud KMS.
 
 2. **Confidential transport:** Use a host-side transport like SSH or TLS
    if the Pico is accessed remotely. The encrypted transport is a partial

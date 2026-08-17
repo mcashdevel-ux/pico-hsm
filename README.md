@@ -114,6 +114,12 @@ with PicoHSM("/dev/ttyACM0") as hsm:
     raw = hsm.seed(32)                   # -> 32 bytes of raw TRNG entropy
     print(hsm.version())                 # VERSION pico-hsm/1.7.0 ...
     print(hsm.help())                    # COMMANDS WHO PING ...
+    # Persistent key (opt-in, v1.7.0):
+    hsm.key_store("myPin")               # encrypt + save key to flash
+    # ...reboot Pico...
+    fp = hsm.key_load("myPin")           # decrypt + load; returns fingerprint
+    hsm.key_erase()                      # delete from flash
+    print(hsm.key_status())              # {'persistent': False, 'degraded': False}
 ```
 
 The port defaults to `$PICO_HSM_PORT` or `/dev/ttyACM0`. `challenge()` accepts
@@ -167,12 +173,18 @@ either `bytes` or a hex string; `seed(n)` returns raw bytes (1–256).
 ### HSM — `pico/hsm.py`
 
 - On boot, `trng.key256()` mints a **volatile HMAC key in RAM**. It is never
-  written to flash and is destroyed on power-loss.
+  written to flash by default and is destroyed on power-loss.
 - At the same time, the RP2040's factory chip ID (`machine.unique_id()`) is
   read and stored as a **persistent device identifier**. Unlike the key, it
   survives reboots and reflashes — it is burned into silicon at manufacturing
   time. This gives the host a way to distinguish *this specific board* from
   any other board running the same firmware (see [Device identity](#device-identity)).
+- **Opt-in persistent key (v1.7.0):** `KEY_STORE <pin>` encrypts the current
+  HMAC key with a PIN-derived key (iterated SHA-256, AES-ECB) and writes it
+  to flash (`pico_hsm_key.enc`). On reboot, `KEY_LOAD <pin>` decrypts and
+  restores the key so the fingerprint stays stable across power cycles.
+  This is strictly opt-in — the default remains a fresh volatile key per boot.
+  See [Limitations](#limitations--honest-notes) for the security trade-offs.
 - `hsm.py` is a pure library: it defines `handle(line)`, the key, and the
   device ID, but does not run a REPL loop. `main.py` is the entry point that
   prints the boot banner and serves the serial protocol. This separation lets
@@ -303,7 +315,7 @@ provide this.
 |-------|---------------|----------------|
 | Random/stock-firmware Pico swap | **blocked** | blocked |
 | Attacker read your ID, spoofed it in custom firmware | not blocked | **blocked** |
-| Key extraction from board | n/a (no persistent key) | **blocked** (non-extractable) |
+| Key extraction from board | n/a (volatile by default; opt-in flash key is PIN-encrypted) | **blocked** (non-extractable) |
 
 ## Repository layout
 
@@ -326,8 +338,9 @@ pico-hsm/
 │   └── trng_stats.py  # TRNG statistical test suite (monobit/runs/chi-square)
 ├── tests/             # pytest integration tests (skip if no board)
 │   ├── conftest.py    # session-scoped PicoHSM fixture + skip logic
-│   ├── test_hsm.py    # 17 tests across 7 command classes
+│   ├── test_hsm.py    # 28 tests: 7 base classes + 11 persistent-key (hw)
 │   ├── test_hsm_aes_host.py  # 15 tests: AES + TRNG commands (serial)
+│   ├── test_persist_key.py   # 26 persistent-key tests (no hardware needed)
 │   ├── test_nist_health.py   # 13 NIST 90B tests (no hardware needed)
 │   ├── test_json_mode.py    # 17 JSON mode tests (no hardware needed)
 │   ├── test_rate_limit.py   # 16 rate limiter tests (no hardware needed)
@@ -460,7 +473,7 @@ The repo includes a pytest integration suite in `tests/`:
 python3 -m pytest -v
 ```
 
-The 149 tests cover all protocol commands — PING (returns int, increasing),
+The 186 tests cover all protocol commands — PING (returns int, increasing),
 WHO (format with DEVICE + FINGERPRINT, device ID stability, fingerprint
 stability), CHALLENGE (length, determinism, distinct inputs, hex-string
 input), SEED (length, non-determinism, range errors), SEED_STREAM (bulk
@@ -469,8 +482,10 @@ handling (unknown command, bad seed count), plus AES (key fingerprint
 stability, encrypt/decrypt round-trip, CTR mode round-trip, error cases)
 and TRNG status/reprofile/watchdog commands, NIST SP 800-90B continuous
 health tests (repetition-count, adaptive-proportion), JSON output mode,
-rate limiting / lockout, audit log, and encrypted transport (AES-CTR
-session establishment, encrypt/decrypt round-trips, replay protection).
+rate limiting / lockout, audit log, encrypted transport (AES-CTR
+session establishment, encrypt/decrypt round-trips, replay protection),
+and persistent key management (store/load/erase/status, PIN derivation,
+wrong-PIN detection, challenge after load, overwrite).
 
 Tests connect to a real Pico via `$PICO_HSM_PORT` (auto-detected on Linux,
 macOS, and Windows). If no board is detected, all tests are **skipped**
@@ -487,10 +502,10 @@ test record, including:
 - TRNG statistical tests (monobit, runs, chi-square) — all pass on 4096 bytes.
 - **NIST SP 800-22** deep suite (9 tests) — **9/9 pass** at α=0.01 on a
   12,800-byte sample, for both the original and the new DRBG pipeline.
-- 17/17 hardware integration tests pass against real hardware (v1.1.0);
-  149 total tests (17 core + 15 AES/TRNG + 13 NIST + 17 JSON + 16 rate-limit
-  + 21 audit + 26 enc-protocol + 24 seed-stream); 117 run without hardware,
-  32 skip without a board.
+- 43/43 hardware integration tests pass against real hardware (v1.7.0):
+  28 core (`test_hsm.py` — 17 base + 11 persistent-key) + 15 AES/TRNG
+  (`test_hsm_aes_host.py`); 186 total tests (143 no-hardware + 43 hardware);
+  143 run without hardware, 43 skip without a board.
 - Chip ID stable across reboots (e6605481db5f6734); fingerprint changes per boot.
 
 ## Applications
@@ -556,12 +571,19 @@ cannot offer:
 
 ## Limitations & honest notes
 
-- **This is not a persistent key vault.** The HMAC key is minted fresh on every
-  boot and destroyed on power-loss; the fingerprint and key are different every
-  boot (see the warning at the top of this README). Anything sealed with a
-  previous boot's key cannot be decrypted or verified after a reboot. If you
-  need a reusable token or a recoverable long-term key, use a persistent HSM
-  or KMS — this device deliberately cannot provide that.
+- **This is not a persistent key vault (by default).** The HMAC key is minted
+  fresh on every boot and destroyed on power-loss; the fingerprint and key are
+  different every boot (see the warning at the top of this README). Anything
+  sealed with a previous boot's key cannot be decrypted or verified after a
+  reboot. If you need a reusable token or a recoverable long-term key, use a
+  persistent HSM or KMS — this device deliberately defaults to volatile keys.
+  An **opt-in** persistent key mode is available (`KEY_STORE <pin>`,
+  `KEY_LOAD <pin>`, `KEY_ERASE`, `KEY_STATUS`) that encrypts the key with a
+  PIN-derived key and stores it in flash, but this is a convenience feature,
+  not a hardened key vault: AES-ECB is used (the only mode in this MicroPython
+  build), PIN derivation is iterated SHA-256 (not bcrypt/argon2), and a wrong
+  PIN produces a garbage key with no integrity check. For production-grade
+  persistent keys, use a real HSM.
 - This is a **weak** TRNG by silicon-RNG standards — a single floating ADC pin
   is no substitute for a dedicated noise diode or a hardened TRNG IP. The
   min-entropy is measured and a safety margin is applied. The source passes the
@@ -618,6 +640,35 @@ for the full list with details.
 - **Testing:** Test the native module on hardware
 
 ## Changelog
+
+### v1.7.0
+
+- **Persistent key option (opt-in).** Added an opt-in feature to persist the
+  otherwise-volatile HMAC key in flash, encrypted with a PIN-derived key.
+  This breaks the "ephemeral by design" default, so it is strictly opt-in —
+  the default remains a fresh random key on every boot.
+  - **PIN derivation:** 1000-round iterated SHA-256 (lightweight PBKDF).
+    Not bcrypt/argon2 (the RP2040 has no hardware acceleration for those),
+    but adequate for a hobbyist device with a long PIN.
+  - **Encryption:** AES-ECB (the only mode available in this MicroPython
+    `ucryptolib` build). Safe here because the plaintext is a 32-byte random
+    key with no pattern to leak — ECB's weakness (pattern leakage) does not
+    apply to a single random block.
+  - **Commands:** `KEY_STORE <pin>` encrypts and saves the current key;
+    `KEY_LOAD <pin>` decrypts and loads it (returns the new fingerprint);
+    `KEY_ERASE` deletes the flash blob; `KEY_STATUS` reports whether a
+    persistent key exists.
+  - **Wrong PIN:** AES-ECB decryption succeeds (no integrity check), producing
+    a garbage key. The host can detect this by comparing fingerprints.
+  - **Hardware verified:** store → reboot → load with correct PIN restores
+    the original fingerprint; wrong PIN gives a different key;
+    challenge-response matches after load; erase clears the flash blob.
+  - **Tests:** 26 no-hardware tests (`test_persist_key.py`) + 11 hardware
+    tests (`test_hsm.py::TestPersistKey`). Full suite: 186 tests
+    (143 no-hardware + 43 hardware).
+- **Client methods.** Added `key_store(pin)`, `key_load(pin)`, `key_erase()`,
+  `key_status()` to `hsm_client.py`.
+- **Version bump:** 1.6.3 → 1.7.0.
 
 ### v1.6.3
 
