@@ -49,7 +49,7 @@ _COMMANDS = ('WHO', 'PING', 'CHALLENGE <hex>', 'SEED <n>',
              'TRNG', 'TRNG_REPROFILE', 'TRNG_WATCHDOG [ON|OFF|<ms>]',
              'RATE_LIMIT [STATUS|RESET]', 'JSON [ON|OFF]',
              'AUDIT [N|CLEAR]', 'ENC [ON <hex>|OFF|STATUS]',
-             'HELP', 'VERSION')
+             'SEED_STREAM <total> [<chunk>]', 'HELP', 'VERSION')
 
 _JSON_MODE = False
 
@@ -123,6 +123,12 @@ def _format(resp):
         return "ENC OFF"
     if cmd == "ENC_MSG":
         return "ENC_MSG %d %s" % (resp["counter"], resp["response"])
+    if cmd == "SEED_STREAM":
+        lines = ["SEED_STREAM total=%d chunk=%d chunks=%d" % (
+            resp["total_bytes"], resp["chunk_size"], resp["chunk_count"])]
+        for c in resp["chunks"]:
+            lines.append(c)
+        return "\n".join(lines)
     if cmd == "VERSION":
         return "VERSION " + resp["version"] + " micropython-" + resp["mpy"]
     if cmd == "HELP":
@@ -379,6 +385,46 @@ def handle(line):
             return _format(_resp(False, 'SEED', error='trng-unhealthy'))
         return _format(_resp(True, 'SEED',
                              seed=ubinascii.hexlify(raw).decode()))
+    if line == 'SEED_STREAM' or line.startswith('SEED_STREAM '):
+        ok, retry = _rate_check('SEED')
+        if not ok:
+            return _format(_resp(False, 'SEED_STREAM', error='rate-limited',
+                                 retry_after_ms=retry))
+        parts = line[12:].strip().split() if len(line) > 12 else []
+        if len(parts) < 1 or len(parts) > 2:
+            return _format(_resp(False, 'SEED_STREAM',
+                                 error='usage: SEED_STREAM <total> [<chunk>]'))
+        try:
+            total = int(parts[0])
+        except Exception:
+            return _format(_resp(False, 'SEED_STREAM', error='bad-total'))
+        chunk_size = 64
+        if len(parts) == 2:
+            try:
+                chunk_size = int(parts[1])
+            except Exception:
+                return _format(_resp(False, 'SEED_STREAM',
+                                     error='bad-chunk'))
+        if total < 1 or total > 8192:
+            return _format(_resp(False, 'SEED_STREAM',
+                                 error='total-range-1-8192'))
+        if chunk_size < 1 or chunk_size > 256:
+            return _format(_resp(False, 'SEED_STREAM',
+                                 error='chunk-range-1-256'))
+        chunks = []
+        remaining = total
+        while remaining > 0:
+            n = min(chunk_size, remaining)
+            try:
+                raw = trng.raw_entropy(n)
+            except Exception:
+                return _format(_resp(False, 'SEED_STREAM',
+                                     error='trng-unhealthy'))
+            chunks.append(ubinascii.hexlify(raw).decode())
+            remaining -= n
+        return _format(_resp(True, 'SEED_STREAM',
+                             total_bytes=total, chunk_size=chunk_size,
+                             chunk_count=len(chunks), chunks=chunks))
     if line.startswith('AES_ENC '):
         if _aes is None:
             return _format(_resp(False, 'AES_ENC', error='no-aes-module'))

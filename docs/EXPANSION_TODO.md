@@ -91,9 +91,13 @@ Ideas and future directions for the pico-hsm project.
   locked-down hosts and mobile devices).
 - [ ] **WebUSB support.** Make the Pico accessible from a browser via
   WebUSB, enabling a web-based HSM dashboard without installing software.
-- [ ] **Bulk SEED mode.** Instead of one SEED command returning up to 256
-  bytes, add a streaming mode that continuously outputs entropy over serial
-  for high-throughput applications (e.g., seeding a cluster of servers).
+- [x] **Bulk SEED mode.** Added `SEED_STREAM <total> [<chunk_size>]` for
+  high-throughput entropy retrieval. Returns up to 8192 bytes of raw TRNG
+  output, split into chunks (default 64 bytes, configurable 1–256). Each
+  chunk is hex-encoded on its own line (text mode) or a JSON array element
+  (JSON mode). A single call counts as one request against the rate limiter
+  (not per-chunk), enabling bulk retrieval without tripping the lockout.
+  24 host-side pytest tests in `test_seed_stream.py`.
 - [x] **JSON mode.** Added `JSON ON` / `JSON OFF` commands that toggle JSON
   output mode. When enabled, all responses are JSON objects
   (`{"ok": true, "cmd": "PING", "ts": 12345}`) instead of text lines, for
