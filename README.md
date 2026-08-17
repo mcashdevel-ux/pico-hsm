@@ -175,8 +175,14 @@ either `bytes` or a hex string; `seed(n)` returns raw bytes (1–256).
   | `PING`            | `PONG <ticks_ms>`                                 |
   | `CHALLENGE <hex>` | `RESPONSE <hex HMAC-SHA256(key, challenge)>`      |
   | `SEED <n>`        | `SEED <hex>` — *n* raw TRNG bytes (1–256)         |
+  | `JSON [ON|OFF]`   | `OK json on|off` — toggle JSON output mode        |
   | `HELP`            | `COMMANDS <space-separated command list>`         |
   | `VERSION`         | `VERSION pico-hsm/<ver> micropython-<ver>`        |
+
+  In JSON mode (enabled with `JSON ON`), all responses are JSON objects:
+  `{"ok": true, "cmd": "PING", "ts": 12345}`. Errors return
+  `{"ok": false, "cmd": "...", "error": "..."}`. The text protocol remains
+  the default; `JSON OFF` (or bare `JSON`) restores it.
 
   The `DEVICE` field in `WHO` is the RP2040's factory chip ID
   (`machine.unique_id()`), a 16-hex-char persistent identifier. The
@@ -274,6 +280,7 @@ pico-hsm/
 │   ├── test_hsm.py    # 17 tests across 7 command classes
 │   ├── test_hsm_aes_host.py  # 15 tests: AES + TRNG commands (serial)
 │   ├── test_nist_health.py   # 13 NIST 90B tests (no hardware needed)
+│   ├── test_json_mode.py    # 17 JSON mode tests (no hardware needed)
 │   └── test_hsm_aes.py       # mpremote script (runs on Pico, not pytest)
 ├── docs/
 │   └── TEST_RESULTS.md
@@ -398,7 +405,7 @@ The repo includes a pytest integration suite in `tests/`:
 python3 -m pytest -v
 ```
 
-The 45 tests cover all protocol commands — PING (returns int, increasing),
+The 62 tests cover all protocol commands — PING (returns int, increasing),
 WHO (format with DEVICE + FINGERPRINT, device ID stability, fingerprint
 stability), CHALLENGE (length, determinism, distinct inputs, hex-string
 input), SEED (length, non-determinism, range errors), VERSION, HELP, and
@@ -422,7 +429,7 @@ test record, including:
 - **NIST SP 800-22** deep suite (9 tests) — **9/9 pass** at α=0.01 on a
   12,800-byte sample, for both the original and the new DRBG pipeline.
 - 17/17 pytest integration tests pass against real hardware.
-- 45 total tests (17 core + 15 AES/TRNG + 13 NIST); 13 run without hardware, 32 skip without a board.
+- 62 total tests (17 core + 15 AES/TRNG + 13 NIST + 17 JSON); 30 run without hardware, 32 skip without a board.
 - Chip ID stable across reboots (e6605481db5f6734); fingerprint changes per boot.
 
 ## Applications
@@ -547,6 +554,11 @@ Future improvements, roughly ordered by value-to-effort ratio:
 
 ### v1.6.3
 
+- **JSON output mode.** Added `JSON ON` / `JSON OFF` commands that toggle
+  JSON output mode. When enabled, all responses are JSON objects
+  (`{"ok": true, "cmd": "PING", "ts": 12345}`) instead of text lines, for
+  easy parsing in non-Python hosts. The text protocol remains the default.
+  17 host-side pytest tests in `test_json_mode.py`.
 - **NIST SP 800-90B continuous health tests.** Added the repetition-count and
   adaptive-proportion tests (§4.4) to both the full health gate and the
   watchdog's lightweight check. The repetition-count test detects stuck

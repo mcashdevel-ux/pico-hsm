@@ -1,4 +1,4 @@
-import trng, hashlib, ubinascii, time, sys, machine
+import trng, hashlib, ubinascii, time, sys, machine, ujson
 
 # HSM: mints in-RAM (volatile) keys from silicon entropy on boot.
 # Keys are NEVER written to flash; destroyed on power-loss.
@@ -42,12 +42,65 @@ except Exception:
 # Factory-programmed 64-bit chip ID — unique per RP2040, survives reflash.
 _DEVICE_ID = ubinascii.hexlify(machine.unique_id()).decode()
 
-_VERSION = 'pico-hsm/1.6.1'
+_VERSION = 'pico-hsm/1.6.3'
 _COMMANDS = ('WHO', 'PING', 'CHALLENGE <hex>', 'SEED <n>',
              'AES_ENC <hex32>', 'AES_DEC <hex32>',
              'AES_CTR <hex_nonce32> <hex_data>', 'AES_KEY',
              'TRNG', 'TRNG_REPROFILE', 'TRNG_WATCHDOG [ON|OFF|<ms>]',
-             'HELP', 'VERSION')
+             'JSON [ON|OFF]', 'HELP', 'VERSION')
+
+_JSON_MODE = False
+
+
+def _resp(ok, cmd, **kw):
+    """Build a structured response dict."""
+    d = {"ok": ok, "cmd": cmd}
+    d.update(kw)
+    return d
+
+
+def _format(resp):
+    """Format a structured response dict as text or JSON."""
+    if _JSON_MODE:
+        return ujson.dumps(resp)
+    # Text protocol: flatten to space-separated KEY VALUE pairs
+    if not resp["ok"]:
+        return "ERR " + resp.get("error", "unknown")
+    cmd = resp["cmd"]
+    if cmd == "PING":
+        return "PONG " + str(resp["ts"])
+    if cmd == "WHO":
+        return ("ID openhands-pico-hsm DEVICE " + resp["device"] +
+                " FINGERPRINT " + resp["fingerprint"] +
+                " STATUS" + (" DEGRADED" if resp.get("degraded") else ""))
+    if cmd == "CHALLENGE":
+        return "RESPONSE " + resp["response"]
+    if cmd == "SEED":
+        return "SEED " + resp["seed"]
+    if cmd == "AES_ENC":
+        return "AES_CT " + resp["ct"]
+    if cmd == "AES_DEC":
+        return "AES_PT " + resp["pt"]
+    if cmd == "AES_CTR":
+        return "AES_OUT " + resp["out"]
+    if cmd == "AES_KEY":
+        return "AES_KEY_FP " + resp["fingerprint"]
+    if cmd == "TRNG":
+        return resp["status"]
+    if cmd == "TRNG_REPROFILE":
+        return "OK reprofile " + ("pass" if resp["passed"] else "fail")
+    if cmd == "TRNG_WATCHDOG":
+        return ("WATCHDOG %s interval=%dms failures=%d reprofiles=%d trend=%s" % (
+            "RUNNING" if resp["running"] else "STOPPED",
+            resp["interval_ms"], resp["failures"], resp["reprofiles"],
+            "DECLINING" if resp["trend_declining"] else "stable"))
+    if cmd == "JSON":
+        return "OK json " + ("on" if resp["enabled"] else "off")
+    if cmd == "VERSION":
+        return "VERSION " + resp["version"] + " micropython-" + resp["mpy"]
+    if cmd == "HELP":
+        return "COMMANDS " + " ".join(resp["commands"])
+    return "ERR " + resp.get("error", "unknown")
 
 def _hmac_sha256(key, msg):
     block = 64
@@ -69,112 +122,136 @@ def _parse_hex(hx):
         return None
 
 def handle(line):
+    global _JSON_MODE
     line = line.strip()
     if not line:
         return ''
     if line.startswith('CHALLENGE '):
         ch = _parse_hex(line[10:].strip())
         if ch is None:
-            return 'ERR bad-hex'
+            return _format(_resp(False, 'CHALLENGE', error='bad-hex'))
         mac = _hmac_sha256(_KEY, ch)
-        return 'RESPONSE ' + ubinascii.hexlify(mac).decode()
+        return _format(_resp(True, 'CHALLENGE',
+                             response=ubinascii.hexlify(mac).decode()))
     if line.startswith('SEED '):
         try:
             n = int(line[5:].strip())
         except Exception:
-            return 'ERR bad-count'
+            return _format(_resp(False, 'SEED', error='bad-count'))
         if n < 1 or n > 256:
-            return 'ERR count-range-1-256'
+            return _format(_resp(False, 'SEED', error='count-range-1-256'))
         try:
             raw = trng.raw_entropy(n)
         except Exception:
-            return 'ERR trng-unhealthy'
-        return 'SEED ' + ubinascii.hexlify(raw).decode()
+            return _format(_resp(False, 'SEED', error='trng-unhealthy'))
+        return _format(_resp(True, 'SEED',
+                             seed=ubinascii.hexlify(raw).decode()))
     if line.startswith('AES_ENC '):
         if _aes is None:
-            return 'ERR no-aes-module'
+            return _format(_resp(False, 'AES_ENC', error='no-aes-module'))
         pt = _parse_hex(line[8:].strip())
         if pt is None:
-            return 'ERR bad-hex'
+            return _format(_resp(False, 'AES_ENC', error='bad-hex'))
         if len(pt) != 16:
-            return 'ERR block-size-16'
+            return _format(_resp(False, 'AES_ENC', error='block-size-16'))
         ct = _aes.encrypt_block(_AES_RK, pt)
-        return 'AES_CT ' + ubinascii.hexlify(ct).decode()
+        return _format(_resp(True, 'AES_ENC',
+                             ct=ubinascii.hexlify(ct).decode()))
     if line.startswith('AES_DEC '):
         if _aes is None:
-            return 'ERR no-aes-module'
+            return _format(_resp(False, 'AES_DEC', error='no-aes-module'))
         ct = _parse_hex(line[8:].strip())
         if ct is None:
-            return 'ERR bad-hex'
+            return _format(_resp(False, 'AES_DEC', error='bad-hex'))
         if len(ct) != 16:
-            return 'ERR block-size-16'
+            return _format(_resp(False, 'AES_DEC', error='block-size-16'))
         pt = _aes.decrypt_block(_AES_RK, ct)
-        return 'AES_PT ' + ubinascii.hexlify(pt).decode()
+        return _format(_resp(True, 'AES_DEC',
+                             pt=ubinascii.hexlify(pt).decode()))
     if line.startswith('AES_CTR '):
         if _aes is None:
-            return 'ERR no-aes-module'
+            return _format(_resp(False, 'AES_CTR', error='no-aes-module'))
         parts = line[8:].strip().split(None, 1)
         if len(parts) == 0:
-            return 'ERR usage: AES_CTR <hex_nonce32> <hex_data>'
+            return _format(_resp(False, 'AES_CTR', error='usage: AES_CTR <hex_nonce32> <hex_data>'))
         nonce = _parse_hex(parts[0])
         if nonce is None:
-            return 'ERR bad-hex'
+            return _format(_resp(False, 'AES_CTR', error='bad-hex'))
         if len(nonce) != 16:
-            return 'ERR nonce-size-16'
+            return _format(_resp(False, 'AES_CTR', error='nonce-size-16'))
         data = _parse_hex(parts[1]) if len(parts) > 1 else b''
         if data is None:
-            return 'ERR bad-hex'
+            return _format(_resp(False, 'AES_CTR', error='bad-hex'))
         out = _aes.ctr_xcrypt(_AES_RK, nonce, data)
-        return 'AES_OUT ' + ubinascii.hexlify(out).decode()
+        return _format(_resp(True, 'AES_CTR',
+                             out=ubinascii.hexlify(out).decode()))
     if line == 'AES_KEY':
         if _aes is None:
-            return 'ERR no-aes-module'
-        return 'AES_KEY_FP ' + _AES_FP
+            return _format(_resp(False, 'AES_KEY', error='no-aes-module'))
+        return _format(_resp(True, 'AES_KEY', fingerprint=_AES_FP))
     if line == 'TRNG':
         try:
-            return trng.status_str()
+            return _format(_resp(True, 'TRNG', status=trng.status_str()))
         except Exception as e:
-            return 'ERR ' + str(e)
+            return _format(_resp(False, 'TRNG', error=str(e)))
     if line == 'TRNG_REPROFILE':
         try:
             ok = trng.reprofile()
-            return 'OK reprofile ' + ('pass' if ok else 'fail')
+            return _format(_resp(True, 'TRNG_REPROFILE', passed=ok))
         except Exception as e:
-            return 'ERR ' + str(e)
+            return _format(_resp(False, 'TRNG_REPROFILE', error=str(e)))
     if line == 'TRNG_WATCHDOG':
         try:
             wd = trng.watchdog_status()
-            return ('WATCHDOG %s interval=%dms failures=%d reprofiles=%d trend=%s' % (
-                "RUNNING" if wd['running'] else "STOPPED",
-                wd['interval_ms'], wd['failures'], wd['reprofiles'],
-                "DECLINING" if wd['trend_declining'] else "stable"))
+            return _format(_resp(True, 'TRNG_WATCHDOG',
+                                 running=wd['running'],
+                                 interval_ms=wd['interval_ms'],
+                                 failures=wd['failures'],
+                                 reprofiles=wd['reprofiles'],
+                                 trend_declining=wd['trend_declining']))
         except Exception as e:
-            return 'ERR ' + str(e)
+            return _format(_resp(False, 'TRNG_WATCHDOG', error=str(e)))
     if line.startswith('TRNG_WATCHDOG '):
         arg = line[14:].strip().upper()
         try:
             if arg == 'ON':
                 ok = trng.start_watchdog()
-                return 'OK watchdog ' + ('started' if ok else 'already-running')
+                return _format(_resp(True, 'TRNG_WATCHDOG',
+                                     running=True, interval_ms=trng._wd_interval_ms,
+                                     failures=0, reprofiles=trng._wd_reprofiles,
+                                     trend_declining=False))
             elif arg == 'OFF':
                 trng.stop_watchdog()
-                return 'OK watchdog stopped'
+                return _format(_resp(True, 'TRNG_WATCHDOG',
+                                     running=False, interval_ms=trng._wd_interval_ms,
+                                     failures=trng._wd_failures,
+                                     reprofiles=trng._wd_reprofiles,
+                                     trend_declining=False))
             else:
-                # Try parsing as interval in ms
                 ms = int(arg)
                 trng.stop_watchdog()
                 ok = trng.start_watchdog(interval_ms=ms)
-                return 'OK watchdog interval=%dms %s' % (ms, 'started' if ok else 'failed')
+                return _format(_resp(True, 'TRNG_WATCHDOG',
+                                     running=ok, interval_ms=ms,
+                                     failures=0, reprofiles=trng._wd_reprofiles,
+                                     trend_declining=False))
         except Exception as e:
-            return 'ERR ' + str(e)
+            return _format(_resp(False, 'TRNG_WATCHDOG', error=str(e)))
+    if line == 'JSON' or line == 'JSON OFF':
+        _JSON_MODE = False
+        return _format(_resp(True, 'JSON', enabled=False))
+    if line == 'JSON ON':
+        _JSON_MODE = True
+        return _format(_resp(True, 'JSON', enabled=True))
     if line == 'WHO':
-        status = ' DEGRADED' if _DEGRADED else ''
-        return ('ID openhands-pico-hsm DEVICE ' + _DEVICE_ID +
-                ' FINGERPRINT ' + _fingerprint() + ' STATUS' + status)
+        return _format(_resp(True, 'WHO', device=_DEVICE_ID,
+                             fingerprint=_fingerprint(),
+                             degraded=_DEGRADED))
     if line == 'PING':
-        return 'PONG ' + str(time.ticks_ms())
+        return _format(_resp(True, 'PING', ts=time.ticks_ms()))
     if line == 'VERSION':
-        return 'VERSION ' + _VERSION + ' micropython-' + sys.version.split(';')[0].strip()
+        return _format(_resp(True, 'VERSION', version=_VERSION,
+                             mpy=sys.version.split(';')[0].strip()))
     if line == 'HELP':
-        return 'COMMANDS ' + ' '.join(_COMMANDS)
-    return 'ERR unknown-cmd'
+        return _format(_resp(True, 'HELP', commands=list(_COMMANDS)))
+    return _format(_resp(False, 'UNKNOWN', error='unknown-cmd'))

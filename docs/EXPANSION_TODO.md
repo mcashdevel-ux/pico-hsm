@@ -76,8 +76,12 @@ Ideas and future directions for the pico-hsm project.
 - [ ] **Bulk SEED mode.** Instead of one SEED command returning up to 256
   bytes, add a streaming mode that continuously outputs entropy over serial
   for high-throughput applications (e.g., seeding a cluster of servers).
-- [ ] **JSON mode.** Add a JSON output mode alongside the current text
-  protocol for easier parsing in non-Python hosts.
+- [x] **JSON mode.** Added `JSON ON` / `JSON OFF` commands that toggle JSON
+  output mode. When enabled, all responses are JSON objects
+  (`{"ok": true, "cmd": "PING", "ts": 12345}`) instead of text lines, for
+  easy parsing in non-Python hosts. The text protocol remains the default.
+  `handle()` refactored to build structured response dicts via `_resp()` /
+  `_format()`. 17 host-side pytest tests in `test_json_mode.py`.
 
 ## Testing / CI
 

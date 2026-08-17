@@ -27,6 +27,10 @@ if not hasattr(_time, "ticks_ms"):
 if not hasattr(_time, "ticks_diff"):
     _time.ticks_diff = lambda a, b: a - b
 
+# Force fresh import of real trng (other test modules may have stubbed it)
+for _m in ["trng"]:
+    if _m in sys.modules:
+        del sys.modules[_m]
 import trng
 
 
