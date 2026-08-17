@@ -1,8 +1,9 @@
 __pycache__/
 *.pyc
 *.pyo
-.mpy
 *.mpy
 *.bak
 *.tmp
 *~
+# Keep the pre-built AES native module (committed binary artifact)
+!pico/native/aes.mpy

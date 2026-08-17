@@ -1,6 +1,6 @@
 # Integration test: AES + TRNG commands via the HSM command interface
 # Tests the full path: serial command -> hsm.handle() -> native aes module
-# Run on the Pico: mpremote connect /dev/ttyACM0 run test_hsm_aes.py
+# Run on the Pico: mpremote connect /dev/ttyACM0 run tests/test_hsm_aes.py
 import hsm, ubinascii, os
 
 passed = 0
