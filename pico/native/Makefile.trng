@@ -1,0 +1,27 @@
+# Makefile for trng_native — native MicroPython module for RP2040 ADC TRNG
+#
+# Build:
+#   make ARCH=armv6m MPY_DIR=~/micropython
+#
+# This produces trng_native.mpy which can be copied to the Pico:
+#   mpremote connect /dev/ttyACM0 cp trng_native.mpy :
+
+# Location of top-level MicroPython directory
+MPY_DIR ?= ~/micropython
+
+# Name of module
+MOD = trng_native
+
+# Source files (.c or .py)
+SRC = trng_native.c
+
+# Architecture: RP2040 = ARM Cortex-M0+ = armv6m
+ARCH = armv6m
+
+# Link with libgcc.a only (for __aeabi_* and __builtin_* support).
+# We don't use libm (health check is integer-only), so we add libgcc manually
+# instead of LINK_RUNTIME=1 which would also pull in libm (and __errno).
+MPY_LD_FLAGS += -l$(realpath $(shell arm-none-eabi-gcc -mthumb -mcpu=cortex-m0 --print-libgcc-file-name))
+
+# Include to get the rules for compiling and linking the module
+include $(MPY_DIR)/py/dynruntime.mk

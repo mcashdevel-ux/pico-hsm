@@ -17,7 +17,21 @@
 #
 # The ADC source was validated 2026-08-16 against the NIST SP 800-22 suite
 # (9/9 tests, alpha=0.01) using the trng-crypt repo's test harness.
+#
+# Native C acceleration (v1.6.0):
+#   If the trng_native.mpy module is present on the Pico's filesystem, the
+#   hot path (ADC sampling → health gate → VN debias → HMAC-DRBG) runs in C
+#   instead of Python, giving ~100x speedup for SEED. The Python pipeline
+#   remains as a fallback if the native module is not installed.
 import machine, hashlib, math, gc
+
+# Try to import the native C module for acceleration.
+try:
+    import trng_native
+    _has_native = True
+except ImportError:
+    trng_native = None
+    _has_native = False
 
 _ADC_PIN = None
 _ADC = None
@@ -203,6 +217,25 @@ def _num_extract_bits():
     return len(_selected_bits)
 
 
+def _bits_to_mask():
+    """Convert _selected_bits (16-bit ADC positions) to a 12-bit bitmask for
+    the native C module.
+
+    The Python code uses read_u16() which left-shifts the 12-bit ADC result
+    by 4 (bits 4-15 of the 16-bit value). The native C module reads the raw
+    12-bit register directly (bits 0-11). So bit N in 16-bit space maps to
+    bit N-4 in 12-bit space.
+    """
+    if _selected_bits is None:
+        return 0x3F  # default: bits 4-9 → 12-bit bits 0-5
+    mask = 0
+    for b in _selected_bits:
+        pos = b - 4
+        if 0 <= pos < 12:
+            mask |= (1 << pos)
+    return mask
+
+
 # ── Health gate ────────────────────────────────────────────────────────── #
 def _health_check(raw):
     """Screen raw bytes; return metrics dict, or raise on degraded source.
@@ -379,6 +412,9 @@ def _fresh_entropy(nbytes):
     On health failure, re-profiles the ADC (selects different bits) and
     retries, up to 3 attempts. Raises RuntimeError if all attempts fail.
     Also checks the watchdog's degradation flag before collecting.
+
+    If the native C module (trng_native) is available, the entire hot path
+    (collect → health → VN debias) runs in C for ~100x speedup.
     """
     global _wd_failures, _wd_active
     _init()
@@ -387,6 +423,18 @@ def _fresh_entropy(nbytes):
     if _wd_failures > 0 and _wd_active:
         reprofile()
         _wd_failures = 0
+
+    # Native C fast path: collect + health + VN debias in one call
+    if _has_native:
+        bit_mask = _bits_to_mask()
+        try:
+            return trng_native.fresh_entropy(nbytes, bit_mask)
+        except Exception:
+            # Health failure in native module — fall through to Python path
+            # which will re-profile and retry
+            pass
+
+    # Python fallback path
     need = max(nbytes * 8, 4096)
     for attempt in range(3):
         raw = _collect_raw(need)
@@ -613,6 +661,7 @@ def status():
       temperature   — die temperature °C (or None)
       metrics       — per-bit profiling data (list of dicts) or None
       healthy       — True if last health check passed (None if untested)
+      native        — True if native C module is loaded
       watchdog      — watchdog status dict (running, failures, reprofiles, ...)
     """
     _init()
@@ -623,6 +672,7 @@ def status():
         'temperature': _last_temp,
         'metrics': _last_metrics,
         'healthy': None,  # updated by _fresh_entropy callers if needed
+        'native': _has_native,
         'watchdog': watchdog_status(),
     }
 
@@ -637,6 +687,7 @@ def status_str():
     temp_str = "%.1fC" % temp if temp is not None else "?"
     lines = ["BITS %s" % ",".join(str(b) for b in bits)]
     lines.append("NUM_BITS %d" % s['num_bits'])
+    lines.append("NATIVE %s" % ("YES" if s['native'] else "NO"))
     lines.append("TEMP %s" % temp_str)
     # Watchdog status
     wd = s['watchdog']

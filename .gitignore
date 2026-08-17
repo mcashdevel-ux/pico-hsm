@@ -7,3 +7,5 @@ __pycache__/
 *~
 # Keep the pre-built AES native module (committed binary artifact)
 !pico/native/aes.mpy
+# Keep the pre-built TRNG native module (committed binary artifact)
+!pico/native/trng_native.mpy
