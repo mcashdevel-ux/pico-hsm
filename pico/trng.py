@@ -34,7 +34,12 @@ _last_temp = None         # die temperature at last profile (°C), or None
 
 # Profiling thresholds — a bit is "good" if it passes all of these.
 _PROF_MIN_BALANCE = 0.30   # fraction of 1s must be in [0.30, 0.70]
-_PROF_MIN_TRANS = 0.05     # at least 5% of consecutive samples must flip
+_PROF_MIN_TRANS = 0.30     # at least 30% of consecutive samples must flip
+                           # Sticky bits (low transition rate) create high
+                           # serial correlation in packed bytes that fails
+                           # the full health gate. 0.30 selects only high-
+                           # quality noise bits (the original v1.3.0 set was
+                           # bits 4-9, all with trans ~0.45-0.50).
 _PROF_MAX_TRANS = 0.95     # at most 95% (above = oscillating, not random)
 _PROF_MIN_BITS = 4         # need at least 4 good bits to proceed
 _PROF_MAX_BITS = 8         # cap to keep bytes manageable (max 255)
@@ -375,6 +380,7 @@ def _fresh_entropy(nbytes):
     retries, up to 3 attempts. Raises RuntimeError if all attempts fail.
     Also checks the watchdog's degradation flag before collecting.
     """
+    global _wd_failures, _wd_active
     _init()
     _ensure_profiled()
     # If the watchdog flagged degradation since last call, reprofile now
