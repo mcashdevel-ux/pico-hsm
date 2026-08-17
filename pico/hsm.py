@@ -27,6 +27,83 @@ def _mint_key(margin=4, retries=3):
 
 _KEY, _DEGRADED = _mint_key()
 
+# ── Persistent key (opt-in, encrypted in flash) ─────────────────────────── #
+# The volatile key is always minted at boot. If the user opts in via
+# KEY_STORE, the current HMAC key is encrypted with a PIN-derived key and
+# saved to flash. On reboot, KEY_LOAD <pin> decrypts and replaces the
+# volatile key. This breaks the "ephemeral by design" property, so it is
+# strictly opt-in. The encrypted blob is never readable without the PIN.
+
+_PERSIST_KEY_FILE = 'pico_hsm_key.enc'
+_PERSIST_SALT = b'pico-hsm-persist-v1'  # fixed salt for PIN derivation
+
+def _derive_pin_key(pin):
+    """Derive a 32-byte encryption key from a PIN string.
+
+    Uses iterated SHA-256 (1000 rounds) as a lightweight PBKDF.
+    """
+    if isinstance(pin, str):
+        pin = pin.encode('utf-8')
+    dk = hashlib.sha256(_PERSIST_SALT + pin).digest()
+    for _ in range(999):
+        dk = hashlib.sha256(dk + _PERSIST_SALT).digest()
+    return dk
+
+def _persist_key_store(pin):
+    """Encrypt the current HMAC key with the PIN-derived key and save to flash.
+
+    Uses AES-ECB (the only mode available in this MicroPython ucryptolib build).
+    ECB is safe here: the plaintext is a 32-byte random key (2 blocks), so there
+    is no pattern to leak.
+    """
+    import ucryptolib
+    pin_key = _derive_pin_key(pin)
+    cipher = ucryptolib.aes(pin_key, 1)  # 1 = AES-ECB
+    ct = cipher.encrypt(_KEY)
+    blob = b'PHSM' + ct
+    with open(_PERSIST_KEY_FILE, 'wb') as f:
+        f.write(blob)
+    return True
+
+def _persist_key_load(pin):
+    """Load and decrypt the persistent key from flash, set as current HMAC key."""
+    global _KEY, _DEGRADED
+    import ucryptolib
+    try:
+        with open(_PERSIST_KEY_FILE, 'rb') as f:
+            blob = f.read()
+    except OSError:
+        return False, 'no-stored-key'
+    if len(blob) < 4 or blob[:4] != b'PHSM':
+        return False, 'bad-format'
+    ct = blob[4:]
+    if len(ct) != 32:
+        return False, 'bad-length'
+    pin_key = _derive_pin_key(pin)
+    cipher = ucryptolib.aes(pin_key, 1)
+    pt = cipher.decrypt(ct)
+    _KEY = pt
+    _DEGRADED = False
+    return True, None
+
+def _persist_key_erase():
+    """Delete the persistent key file from flash."""
+    try:
+        import os
+        os.remove(_PERSIST_KEY_FILE)
+        return True
+    except OSError:
+        return False
+
+def _persist_key_exists():
+    """Check if a persistent key file exists in flash."""
+    try:
+        import os
+        os.stat(_PERSIST_KEY_FILE)
+        return True
+    except OSError:
+        return False
+
 # AES-256 encryption key (minted from TRNG, expanded once at boot).
 _AES_KEY = None
 _AES_RK = None
@@ -42,14 +119,16 @@ except Exception:
 # Factory-programmed 64-bit chip ID — unique per RP2040, survives reflash.
 _DEVICE_ID = ubinascii.hexlify(machine.unique_id()).decode()
 
-_VERSION = 'pico-hsm/1.6.3'
+_VERSION = 'pico-hsm/1.7.0'
 _COMMANDS = ('WHO', 'PING', 'CHALLENGE <hex>', 'SEED <n>',
              'AES_ENC <hex32>', 'AES_DEC <hex32>',
              'AES_CTR <hex_nonce32> <hex_data>', 'AES_KEY',
              'TRNG', 'TRNG_REPROFILE', 'TRNG_WATCHDOG [ON|OFF|<ms>]',
              'RATE_LIMIT [STATUS|RESET]', 'JSON [ON|OFF]',
              'AUDIT [N|CLEAR]', 'ENC [ON <hex>|OFF|STATUS]',
-             'SEED_STREAM <total> [<chunk>]', 'HELP', 'VERSION')
+             'SEED_STREAM <total> [<chunk>]',
+             'KEY_STORE <pin>', 'KEY_LOAD <pin>', 'KEY_ERASE', 'KEY_STATUS',
+             'HELP', 'VERSION')
 
 _JSON_MODE = False
 
@@ -129,6 +208,16 @@ def _format(resp):
         for c in resp["chunks"]:
             lines.append(c)
         return "\n".join(lines)
+    if cmd == "KEY_STORE":
+        return "OK key-stored" if resp.get("stored") else "ERR store-failed"
+    if cmd == "KEY_LOAD":
+        return "OK key-loaded fingerprint=" + resp.get("fingerprint", "")
+    if cmd == "KEY_ERASE":
+        return "OK key-erased" if resp.get("erased") else "ERR no-stored-key"
+    if cmd == "KEY_STATUS":
+        return ("KEY_STATUS persistent=%s degraded=%s" % (
+            "yes" if resp.get("persistent") else "no",
+            "yes" if resp.get("degraded") else "no"))
     if cmd == "VERSION":
         return "VERSION " + resp["version"] + " micropython-" + resp["mpy"]
     if cmd == "HELP":
@@ -608,6 +697,32 @@ def handle(line):
     if line == 'JSON ON':
         _JSON_MODE = True
         return _format(_resp(True, 'JSON', enabled=True))
+    # ── Persistent key management ──
+    if line.startswith('KEY_STORE '):
+        pin = line[10:].strip()
+        if not pin:
+            return _format(_resp(False, 'KEY_STORE', error='usage: KEY_STORE <pin>'))
+        try:
+            _persist_key_store(pin)
+            return _format(_resp(True, 'KEY_STORE', stored=True))
+        except Exception as e:
+            return _format(_resp(False, 'KEY_STORE', error=str(e)))
+    if line.startswith('KEY_LOAD '):
+        pin = line[9:].strip()
+        if not pin:
+            return _format(_resp(False, 'KEY_LOAD', error='usage: KEY_LOAD <pin>'))
+        ok, err = _persist_key_load(pin)
+        if ok:
+            return _format(_resp(True, 'KEY_LOAD', loaded=True,
+                                 fingerprint=_fingerprint()))
+        return _format(_resp(False, 'KEY_LOAD', error=err))
+    if line == 'KEY_ERASE':
+        ok = _persist_key_erase()
+        return _format(_resp(True, 'KEY_ERASE', erased=ok))
+    if line == 'KEY_STATUS':
+        return _format(_resp(True, 'KEY_STATUS',
+                             persistent=_persist_key_exists(),
+                             degraded=_DEGRADED))
     if line == 'WHO':
         return _format(_resp(True, 'WHO', device=_DEVICE_ID,
                              fingerprint=_fingerprint(),

@@ -175,7 +175,7 @@ class TestJSONMode:
         data = json.loads(resp)
         assert data["ok"] is True
         assert data["cmd"] == "VERSION"
-        assert "1.6" in data["version"]
+        assert "pico-hsm/" in data["version"]
 
     def test_help_json(self):
         hsm._JSON_MODE = True

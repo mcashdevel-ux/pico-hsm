@@ -183,7 +183,8 @@ fallback if the native module is absent.
   │                                                          │
   │  Commands: WHO, PING, CHALLENGE, SEED, SEED_STREAM,      │
   │    AES_ENC/DEC/CTR, TRNG, RATE_LIMIT, JSON, AUDIT,      │
-  │    ENC, ENC_MSG, HELP, VERSION                           │
+  │    ENC, ENC_MSG, KEY_STORE/LOAD/ERASE/STATUS,           │
+  │    HELP, VERSION                                        │
   └──────────┬──────────────────────────────────┬───────────┘
              │                                  │
       (plaintext)                        (encrypted)

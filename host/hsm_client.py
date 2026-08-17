@@ -206,6 +206,42 @@ class PicoHSM:
             return resp[11:].strip()
         return resp
 
+    # -- persistent key management -------------------------------------------
+
+    def key_store(self, pin):
+        """Store the current HMAC key encrypted with *pin* in flash.
+
+        Opt-in feature: persists the otherwise-volatile HMAC key so it
+        survives reboots. Returns True on success, False otherwise.
+        """
+        resp = self._send("KEY_STORE " + str(pin))
+        return resp.startswith("OK key-stored")
+
+    def key_load(self, pin):
+        """Load and decrypt the persistent key from flash.
+
+        Returns the new fingerprint (hex) on success, or None on failure.
+        """
+        resp = self._send("KEY_LOAD " + str(pin))
+        if resp.startswith("OK key-loaded fingerprint="):
+            return resp.split("fingerprint=", 1)[1].strip()
+        return None
+
+    def key_erase(self):
+        """Erase the persistent key from flash. Returns True on success."""
+        resp = self._send("KEY_ERASE")
+        return resp.startswith("OK key-erased")
+
+    def key_status(self):
+        """Return dict with 'persistent' and 'degraded' booleans."""
+        resp = self._send("KEY_STATUS")
+        out = {"persistent": False, "degraded": False}
+        if "persistent=yes" in resp:
+            out["persistent"] = True
+        if "degraded=yes" in resp:
+            out["degraded"] = True
+        return out
+
     def aes_enc(self, block):
         """Encrypt a 16-byte block. Returns 16 bytes of ciphertext."""
         if isinstance(block, (bytes, bytearray)):

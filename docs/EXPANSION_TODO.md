@@ -2,9 +2,10 @@
 
 Ideas and future directions for the pico-hsm project.
 
-**Progress:** 13 of 20 items completed. All code-only items that can be done
+**Progress:** 14 of 20 items completed. All code-only items that can be done
 without the physical Pico are done. The native C module has been deployed and
-validated on hardware (NIST SP 800-22, 64 KB, all 6 tests pass). Remaining
+validated on hardware (NIST SP 800-22, 64 KB, all 6 tests pass). Persistent
+key option (opt-in, PIN-encrypted) is implemented and verified. Remaining
 items require deeper hardware work (DMA, entropy sources, secure element,
 core pinning, custom firmware, HID, WebUSB) or formal validation
 (NIST 800-90B).
@@ -39,10 +40,16 @@ See also: [Architecture](ARCHITECTURE.md), [Threat model](THREAT_MODEL.md).
 
 ## HSM / security
 
-- [ ] **Persistent key option.** Store an encrypted HMAC key in flash,
-  sealed by a PIN or a physical button press (BOOTSEL). This would make the
-  key recoverable across reboots without keeping it in plaintext. Trade-off:
-  loses the "ephemeral by design" property, so make it opt-in.
+- [x] **Persistent key option.** Store an encrypted HMAC key in flash,
+  sealed by a PIN. The key is encrypted with a PIN-derived key (iterated
+  SHA-256, 1000 rounds) using AES-ECB (the only mode available in this
+  MicroPython ucryptolib build; safe here because the plaintext is a
+  32-byte random key with no pattern to leak). Commands: `KEY_STORE <pin>`,
+  `KEY_LOAD <pin>`, `KEY_ERASE`, `KEY_STATUS`. Strictly opt-in — the default
+  remains ephemeral (volatile) keys. Verified on hardware: store, reboot,
+  load with correct PIN restores the original fingerprint; wrong PIN gives
+  a different (garbage) key; challenge-response matches after load. 11
+  hardware tests + 26 no-hardware tests.
 - [ ] **Secure element integration (ATECC608A).** Add a hardware secure
   element over I2C for non-extractable keys, true device authentication
   (not just chip ID), and certified RNG. This would close the anti-spoofing

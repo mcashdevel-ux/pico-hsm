@@ -363,3 +363,63 @@ the session-scoped `hsm` instance (no extra serial connection).
 - **Hardware tests:** `pytest tests/test_hsm.py tests/test_hsm_aes_host.py`
   on sparky with Pico at `/dev/ttyACM0`.
 - **Date:** 2026-08-16.
+
+## v1.7.0 — Persistent key (flash, PIN-encrypted, opt-in)
+
+### Feature
+
+The HMAC key is volatile by default (fresh random key on every boot). The
+persistent key feature (`KEY_STORE`, `KEY_LOAD`, `KEY_ERASE`, `KEY_STATUS`)
+allows opt-in persistence: the current key is encrypted with a PIN-derived
+key (iterated SHA-256, 1000 rounds) using AES-ECB and written to flash.
+On reboot, `KEY_LOAD <pin>` decrypts and restores the key so the
+fingerprint stays stable across power cycles.
+
+### Hardware test: store → reboot → load → verify
+
+Test script run on sparky with Pico at `/dev/ttyACM0`.
+
+```
+Original FP:  992ff9177ae2b1cc8129a6fb0f209949782ea3aab31966e800e5e942de9e8cf8
+KEY_STORE:    True
+Status:       {'persistent': True, 'degraded': False}
+Challenge 1:  bbc473fd85323ab699e1f84d581b56a7e127beae301a3c5427501f1331b77c6f
+
+--- Reboot Pico (mpremote reset) ---
+
+FP after reboot:    49f44b3cf88eb768a1f2a0ac6245f2730a3b9250b53c4a120ab8f67e0904d315
+Keys differ:        True   (ephemeral — new random key on boot)
+FP after load:      992ff9177ae2b1cc8129a6fb0f209949782ea3aab31966e800e5e942de9e8cf8
+Matches original:   True   (PIN-encrypted round-trip)
+Challenge 2:        bbc473fd85323ab699e1f84d581b56a7e127beae301a3c5427501f1331b77c6f
+Challenges match:   True   (same key → same HMAC)
+FP after wrong PIN: a97d2c6d545d66c3f20acd88f3742c84058260c699a135cb67d4f2221e800e10
+Wrong PIN differs:  True   (wrong PIN → garbage key)
+Status after erase: {'persistent': False, 'degraded': False}
+```
+
+### Test counts
+
+- **No-hardware tests:** 143 passed, 43 skipped (32 hardware + 11 new
+  persistent-key hardware tests).
+- **New no-hardware tests:** `tests/test_persist_key.py` — 26 tests
+  (PIN derivation, store/load round-trip, erase, command interface).
+- **New hardware tests:** `tests/test_hsm.py::TestPersistKey` — 11 tests
+  (status, store, load, erase, wrong PIN, challenge after load, empty PIN,
+  help listing, overwrite). All pass on sparky.
+- **Full hardware suite:** 43 passed (test_hsm.py + test_hsm_aes_host.py).
+
+### Security notes
+
+- AES-ECB is used (the only mode available in this MicroPython ucryptolib
+  build). This is safe here because the plaintext is a 32-byte random key
+  with no structure to leak — ECB's weakness (pattern leakage) does not
+  apply to a single random block.
+- PIN derivation: 1000-round iterated SHA-256 (not bcrypt/argon2, but the
+  RP2040 has no hardware acceleration for those). The PIN space is limited
+  by the user; a long PIN is recommended.
+- The PIN is never stored. Only the encrypted key blob (`PHSM` header +
+  32-byte ciphertext) is in flash.
+- Wrong PIN: AES-ECB decryption succeeds (no integrity check), producing
+  a garbage key. The fingerprint will differ, which the host can detect.
+

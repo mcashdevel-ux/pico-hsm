@@ -84,7 +84,7 @@ raw entropy (32 bytes): 47de541fb37c91f30a6c594ade8451748c195b92ba61ac134074d47e
 deterministic (same challenge -> same HMAC)? True
 
 === VERSION ===
-VERSION pico-hsm/1.6.3 micropython-3.4.0
+VERSION pico-hsm/1.7.0 micropython-3.4.0
 ```
 
 The `WHO` response now includes a **DEVICE** field — the factory-programmed
@@ -112,7 +112,7 @@ with PicoHSM("/dev/ttyACM0") as hsm:
     print(hsm.ping())                    # tick count (int)
     mac = hsm.challenge(b"deadbeef")     # -> 32-byte HMAC-SHA256 (bytes)
     raw = hsm.seed(32)                   # -> 32 bytes of raw TRNG entropy
-    print(hsm.version())                 # VERSION pico-hsm/1.6.3 ...
+    print(hsm.version())                 # VERSION pico-hsm/1.7.0 ...
     print(hsm.help())                    # COMMANDS WHO PING ...
 ```
 
@@ -196,6 +196,10 @@ either `bytes` or a hex string; `seed(n)` returns raw bytes (1–256).
   | `AUDIT [N|CLEAR]` | `AUDIT entries=N/CAP ...` — challenge audit log     |
   | `ENC [ON <hex>|OFF|STATUS]` | `ENC ACTIVE|OFF ...` — transport encryption |
   | `ENC_MSG <ctr> <hex_ct>` | `ENC_MSG <ctr> <hex_ct>` — encrypted command  |
+  | `KEY_STORE <pin>` | `OK key-stored` — persist HMAC key (encrypted)   |
+  | `KEY_LOAD <pin>` | `OK key-loaded fingerprint=...` — load from flash |
+  | `KEY_ERASE`       | `OK key-erased` — delete persistent key           |
+  | `KEY_STATUS`      | `KEY_STATUS persistent=yes|no degraded=yes|no`    |
   | `HELP`            | `COMMANDS <space-separated command list>`         |
   | `VERSION`         | `VERSION pico-hsm/<ver> micropython-<ver>`        |
 
@@ -235,6 +239,12 @@ either `bytes` or a hex string; `seed(n)` returns raw bytes (1–256).
   in AES-CTR with a session key derived from the challenge-response exchange.
   Replay-protected via monotonic counters. See
   [Threat model](docs/THREAT_MODEL.md) for the security properties.
+- **Persistent key** (`KEY_STORE`, `KEY_LOAD`, `KEY_ERASE`, `KEY_STATUS`) is
+  an opt-in feature that persists the otherwise-volatile HMAC key in flash,
+  encrypted with a PIN-derived key (iterated SHA-256, 1000 rounds, AES-ECB).
+  On reboot, `KEY_LOAD <pin>` decrypts and restores the key so the
+  fingerprint stays stable across power cycles. The default remains ephemeral
+  (volatile) keys; persistence must be explicitly enabled.
 
 ### Host client — `host/hsm_client.py`
 
@@ -585,7 +595,7 @@ see the [Threat model](docs/THREAT_MODEL.md) and
 Future improvements, grouped by area. See [`docs/EXPANSION_TODO.md`](docs/EXPANSION_TODO.md)
 for the full list with details.
 
-**Completed (v1.6.3):**
+**Completed (v1.7.0):**
 - ~~SHA-256 / HMAC-DRBG in native C~~ ✅ (v1.6.2)
 - ~~NIST SP 800-90B continuous health tests~~ ✅ (v1.6.3)
 - ~~JSON output mode~~ ✅ (v1.6.3)
@@ -594,13 +604,14 @@ for the full list with details.
 - ~~Encrypted serial protocol (AES-CTR)~~ ✅ (v1.6.3)
 - ~~Bulk SEED mode~~ ✅ (v1.6.3)
 - ~~Architecture diagram + threat model~~ ✅ (v1.6.3)
+- ~~NIST SP 800-22 hardware validation~~ ✅ (v1.6.3)
+- ~~Persistent key option (encrypted in flash, opt-in)~~ ✅ (v1.7.0)
 
 **Remaining (require hardware or significant effort):**
 - **TRNG / entropy:** DMA ADC sampling, multiple entropy sources (ring
   oscillator), NIST SP 800-90B formal validation, continuous health monitoring
   in C
-- **HSM / security:** Persistent key option (encrypted in flash, opt-in),
-  secure element integration (ATECC608A over I²C)
+- **HSM / security:** Secure element integration (ATECC608A over I²C)
 - **Platform:** Core 1 dedicated to TRNG, custom MicroPython firmware
   (ROSC.RANDOM, DMA, compiled-in native modules)
 - **Interface:** USB HID interface, WebUSB support

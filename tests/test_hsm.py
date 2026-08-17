@@ -140,3 +140,87 @@ class TestErrorHandling:
         """Non-integer SEED count should return ERR."""
         resp = hsm._send("SEED abc")
         assert "ERR" in resp
+
+
+@skip_no_hardware
+class TestPersistKey:
+    """Hardware tests for the persistent key feature."""
+
+    def test_key_status_no_persistent(self, hsm):
+        """KEY_STATUS should show no persistent key after erase."""
+        hsm.key_erase()
+        status = hsm.key_status()
+        assert status["persistent"] is False
+
+    def test_key_store_and_status(self, hsm):
+        """KEY_STORE should store the key and KEY_STATUS should reflect it."""
+        hsm.key_erase()
+        assert hsm.key_store("testpin") is True
+        status = hsm.key_status()
+        assert status["persistent"] is True
+
+    def test_key_store_and_load_same_fingerprint(self, hsm):
+        """Loading a stored key with correct PIN restores the same fingerprint."""
+        hsm.key_erase()
+        fp_orig = hsm.fingerprint()
+        hsm.key_store("correctpin")
+        # Simulate key change (load overwrites current key)
+        fp_loaded = hsm.key_load("correctpin")
+        assert fp_loaded == fp_orig
+
+    def test_key_load_no_stored_returns_none(self, hsm):
+        """KEY_LOAD with no stored key should return None."""
+        hsm.key_erase()
+        assert hsm.key_load("any") is None
+
+    def test_key_load_wrong_pin_different_fingerprint(self, hsm):
+        """Loading with wrong PIN gives a different key."""
+        hsm.key_erase()
+        fp_orig = hsm.fingerprint()
+        hsm.key_store("correctpin")
+        fp_wrong = hsm.key_load("wrongpin")
+        assert fp_wrong is not None
+        assert fp_wrong != fp_orig
+
+    def test_key_erase(self, hsm):
+        """KEY_ERASE removes the persistent key."""
+        hsm.key_store("pin")
+        assert hsm.key_erase() is True
+        assert hsm.key_status()["persistent"] is False
+
+    def test_key_challenge_works_after_load(self, hsm):
+        """The loaded key can be used for challenge-response."""
+        hsm.key_erase()
+        hsm.key_store("pin")
+        ch_orig = hsm.challenge(bytes.fromhex("deadbeefcafebabe"))
+        hsm.key_load("pin")
+        ch_loaded = hsm.challenge(bytes.fromhex("deadbeefcafebabe"))
+        assert ch_orig == ch_loaded
+
+    def test_key_store_empty_pin_error(self, hsm):
+        """KEY_STORE with no PIN should return error."""
+        resp = hsm._send("KEY_STORE")
+        assert "ERR" in resp
+
+    def test_key_load_empty_pin_error(self, hsm):
+        """KEY_LOAD with no PIN should return error."""
+        resp = hsm._send("KEY_LOAD")
+        assert "ERR" in resp
+
+    def test_key_commands_in_help(self, hsm):
+        """KEY commands should be listed in HELP."""
+        resp = hsm.help()
+        assert "KEY_STORE" in resp
+        assert "KEY_LOAD" in resp
+        assert "KEY_ERASE" in resp
+        assert "KEY_STATUS" in resp
+
+    def test_key_store_overwrites(self, hsm):
+        """Storing twice overwrites the previous key."""
+        hsm.key_erase()
+        fp1 = hsm.fingerprint()
+        hsm.key_store("pin1")
+        hsm.key_store("pin2")
+        # Loading with pin2 should give the second stored key (same as fp1)
+        fp_loaded = hsm.key_load("pin2")
+        assert fp_loaded == fp1
