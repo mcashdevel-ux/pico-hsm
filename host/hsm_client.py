@@ -15,11 +15,55 @@ Or run directly as a demo CLI::
 """
 import argparse
 import binascii
+import glob
 import os
 import serial
+import sys
 import time
 
-DEFAULT_PORT = os.environ.get("PICO_HSM_PORT", "/dev/ttyACM0")
+
+def _detect_port():
+    """Auto-detect the Pico serial port on Linux, macOS, or Windows.
+
+    Priority: $PICO_HSM_PORT env var > first matching device found.
+    Linux:   /dev/ttyACM*
+    macOS:   /dev/cu.usbmodem*
+    Windows: COM* (via pyserial comports if available, else glob)
+    """
+    env = os.environ.get("PICO_HSM_PORT")
+    if env:
+        return env
+
+    patterns = {
+        "linux": "/dev/ttyACM*",
+        "darwin": "/dev/cu.usbmodem*",
+        "win32": "COM*",
+    }
+    plat = sys.platform
+    pattern = patterns.get(plat)
+    if pattern is None:
+        return "/dev/ttyACM0"
+
+    # On Windows, use pyserial's comports() for reliable enumeration
+    if plat == "win32":
+        try:
+            from serial.tools import list_ports
+            for port, desc, hwid in list_ports.comports():
+                if "2e8a" in hwid.lower() or "picopico" in desc.lower() \
+                        or "micropython" in desc.lower():
+                    return port
+            # Fall back to first available COM port
+            for port, desc, hwid in list_ports.comports():
+                return port
+        except ImportError:
+            pass
+        return "COM3"
+
+    # Linux / macOS: glob for the device files
+    ports = sorted(glob.glob(pattern))
+    return ports[0] if ports else pattern.replace("*", "0")
+
+DEFAULT_PORT = _detect_port()
 BAUD = 115200
 
 
@@ -152,6 +196,49 @@ class PicoHSM:
     def help(self):
         """Return the HELP response line (available commands)."""
         return self._send("HELP")
+
+    def aes_key(self):
+        """Return the AES key fingerprint (hex string)."""
+        resp = self._send("AES_KEY")
+        if resp.startswith("AES_KEY_FP "):
+            return resp[11:].strip()
+        return resp
+
+    def aes_enc(self, block):
+        """Encrypt a 16-byte block. Returns 16 bytes of ciphertext."""
+        if isinstance(block, (bytes, bytearray)):
+            hx = binascii.hexlify(block).decode()
+        else:
+            hx = block
+        resp = self._send("AES_ENC " + hx)
+        if resp.startswith("AES_CT "):
+            return binascii.unhexlify(resp[7:].strip())
+        return resp
+
+    def aes_dec(self, block):
+        """Decrypt a 16-byte block. Returns 16 bytes of plaintext."""
+        if isinstance(block, (bytes, bytearray)):
+            hx = binascii.hexlify(block).decode()
+        else:
+            hx = block
+        resp = self._send("AES_DEC " + hx)
+        if resp.startswith("AES_PT "):
+            return binascii.unhexlify(resp[7:].strip())
+        return resp
+
+    def aes_ctr(self, nonce, data):
+        """AES-CTR encrypt/decrypt. Returns output bytes."""
+        if isinstance(nonce, (bytes, bytearray)):
+            nonce = binascii.hexlify(nonce).decode()
+        if isinstance(data, (bytes, bytearray)):
+            data = binascii.hexlify(data).decode() if data else ""
+        cmd = "AES_CTR " + nonce
+        if data:
+            cmd += " " + data
+        resp = self._send(cmd)
+        if resp.startswith("AES_OUT "):
+            return binascii.unhexlify(resp[8:].strip())
+        return resp
 
     def close(self):
         self.ser.close()

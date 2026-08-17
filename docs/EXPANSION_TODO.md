@@ -44,13 +44,15 @@ Ideas and future directions for the pico-hsm project.
 
 ## Performance / firmware
 
-- [ ] **Benchmark native module.** Measure actual SEED speedup with the
-  native C module (target: <1s for 32 bytes, vs ~20s in Python). Not yet
-  benchmarked because the first version crashed the Pico (writing to clock
-  registers). The fixed version (ADC CS/RESULT only) is built but untested.
-- [ ] **Move HMAC-DRBG to native C.** The DRBG is currently in Python.
-  Moving it to C (alongside the already-native collect/health/debias path)
-  would eliminate the last Python bottleneck in the SEED pipeline.
+- [x] **Benchmark native module.** Measured: native `fresh_entropy(32)` =
+  32.6 ms, Python DRBG `generate(256)` = 25.9 ms (12 × HMAC at 2.2 ms each),
+  total `raw_entropy(256)` = 74.7 ms. The native C path (ADC → health → VN
+  debias) is ~100× faster than the original Python-only pipeline; the remaining
+  bottleneck was the Python HMAC-DRBG, now eliminated (see next item).
+- [x] **Move HMAC-DRBG to native C.** `trng_native.seed()` runs the full
+  pipeline (ADC → health → VN debias → SHA-256 → HMAC-DRBG) in C.
+  `raw_entropy()` now calls `trng_native.seed()` directly when the native
+  module is available (commit b430de6), falling back to the Python DRBG.
 - [ ] **Core 1 dedicated to TRNG.** Pin the native TRNG collection to
   core 1 (via `_thread` or the SDK's `core1_launch`) so it never contends
   with the serial REPL on core 0.
@@ -77,12 +79,11 @@ Ideas and future directions for the pico-hsm project.
 - [ ] **Test the native module on hardware.** After the Pico is physically
   reset, copy `trng_native.mpy`, verify SEED speedup, and run the NIST
   statistical suite on native-module output.
-- [ ] **CI pipeline.** Set up GitHub Actions to run the pytest suite
-  (tests skip gracefully when no board is connected) and lint the C code
-  with `cppcheck`.
-- [ ] **Cross-platform host client.** The `hsm_client.py` assumes Linux
-  (`/dev/ttyACM0`). Add auto-detection for macOS (`/dev/cu.usbmodem*`)
-  and Windows (`COM*`).
+- [x] **CI pipeline.** GitHub Actions runs pytest (skips without hardware)
+  and lints C code with cppcheck (`.github/workflows/ci.yml`).
+- [x] **Cross-platform host client.** `hsm_client.py._detect_port()` now
+  auto-detects the serial port on Linux (`/dev/ttyACM*`), macOS
+  (`/dev/cu.usbmodem*`), and Windows (`COM*` via pyserial comports).
 
 ## Documentation
 

@@ -43,9 +43,9 @@ resp = hsm.handle("HELP")
 for cmd in ("AES_ENC", "AES_DEC", "AES_CTR", "AES_KEY", "TRNG", "TRNG_REPROFILE", "TRNG_WATCHDOG"):
     check_true("HELP includes " + cmd, cmd in resp)
 
-# VERSION should be 1.5.0
+# VERSION should be 1.6.x
 resp = hsm.handle("VERSION")
-check_true("VERSION is 1.5.0", "pico-hsm/1.5.0" in resp)
+check_true("VERSION is 1.6.x", "pico-hsm/1.6" in resp)
 
 # ── TRNG adaptive status ────────────────────────────────────────────── #
 print("\n--- TRNG adaptive status ---")

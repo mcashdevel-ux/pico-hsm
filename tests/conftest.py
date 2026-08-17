@@ -9,9 +9,15 @@ import sys
 
 import pytest
 
+# test_hsm_aes.py runs on the Pico via mpremote, not under pytest — exclude
+# it from collection so importing MicroPython-only modules doesn't error.
+collect_ignore = ["test_hsm_aes.py"]
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "host"))
 
-DEFAULT_PORT = os.environ.get("PICO_HSM_PORT", "/dev/ttyACM0")
+from hsm_client import _detect_port
+
+DEFAULT_PORT = _detect_port()
 
 
 def _port_available():
