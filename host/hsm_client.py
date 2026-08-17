@@ -28,7 +28,9 @@ class PicoHSM:
 
     def __init__(self, port=DEFAULT_PORT, baud=BAUD):
         self.port = port
-        self.ser = serial.Serial(port, baud, timeout=5, dsrdtr=False, rtscts=False)
+        # Short inter-byte timeout so _send doesn't block 5s per command
+        # after the response is fully received.
+        self.ser = serial.Serial(port, baud, timeout=1, dsrdtr=False, rtscts=False)
         time.sleep(0.3)
         # Send Ctrl-C twice to interrupt any running code and exit raw REPL
         # mode (left by prior mpremote sessions). Then Ctrl-D to soft-reset,
@@ -69,22 +71,25 @@ class PicoHSM:
     def _send(self, cmd):
         """Send a command line, return the first non-echo response line."""
         self.ser.write((cmd + "\n").encode())
-        time.sleep(0.15)
         r = b""
-        end = time.time() + 5
+        end = time.time() + 10
         while time.time() < end:
-            b = self.ser.read(256)
-            if b:
-                r += b
+            # Non-blocking: read whatever is already in the buffer
+            n = self.ser.in_waiting
+            if n:
+                r += self.ser.read(n)
+                # Small grace period for the rest of the response to arrive
                 time.sleep(0.05)
-            elif r:
+                continue
+            if r:
+                # We have data and the buffer is empty — check once more
+                # after a brief pause, then return.
                 time.sleep(0.1)
-                # One more read to catch a late response
-                more = self.ser.read(256)
-                if more:
-                    r += more
+                if self.ser.in_waiting:
                     continue
                 break
+            # No data yet — brief poll
+            time.sleep(0.05)
         text = r.decode(errors="replace").strip()
         lines = [l.strip() for l in text.split("\n") if l.strip()]
         for line in lines:
