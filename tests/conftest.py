@@ -39,5 +39,26 @@ def hsm():
     """
     from hsm_client import PicoHSM
     dev = PicoHSM(DEFAULT_PORT)
+    # Disable rate limiting for the test suite — tests send many rapid
+    # commands and the rate limiter (10 req/10s) would cause spurious
+    # ERR rate-limited failures. Re-enabled on next board reset.
+    dev._send("RATE_LIMIT RESET")
     yield dev
     dev.close()
+
+
+@pytest.fixture(autouse=True)
+def _reset_rate_limit(request):
+    """Reset the rate limiter before each hardware test to avoid cross-test
+    interference.
+
+    Only activates when the board is present. Uses the session-scoped ``hsm``
+    instance so no extra serial connection is opened.
+    """
+    if not _port_available():
+        return
+    try:
+        hsm = request.getfixturevalue("hsm")
+        hsm._send("RATE_LIMIT RESET")
+    except Exception:
+        pass  # not all firmware versions support RATE_LIMIT

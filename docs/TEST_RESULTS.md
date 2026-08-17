@@ -282,3 +282,84 @@ SEED 16 => SEED 82cae729ba9a3c153244d63d4b043a1d
   suite) from the trng-crypt repo. No analysis ran on the Pico itself — only
   data collection.
 - **Date:** 2026-08-16.
+
+## v1.6.3 — Native C module + NIST SP 800-22 on hardware
+
+### NIST SP 800-22 statistical suite (64 KB, native module)
+
+After deploying the native C TRNG module (`trng_native.mpy`) to the Pico,
+64 KB of entropy was collected via `SEED_STREAM` (16 calls × 4096 bytes,
+~327 bytes/s throughput). The NIST SP 800-22 suite was run with
+`host/nist_800_22.py`:
+
+```
+Loaded 65536 bytes from /tmp/entropy.bin
+
+✅ PASS  Monobit: proportion=0.500015 threshold=±0.002762 ones=262152
+✅ PASS  Runs: transitions=261558 expected=262143.5 chi_sq=1.3077
+✅ PASS  Chi-square (byte): chi_sq=264.6094 threshold=311.41 expected=256.0/byte
+✅ PASS  Poker (4-bit): chi_sq=18.7390 threshold=25.0
+✅ PASS  Serial (2-bit): chi_sq=5.5398 threshold=7.815 counts=[65650, 65026, 65810, 65658]
+✅ PASS  Autocorr (lag=1): lag=1 proportion=0.501117 threshold=±0.002762
+
+All tests PASSED — output looks random.
+```
+
+### Validation methodology
+
+- The test suite was validated against Python's `os.urandom` (CSPRNG) at the
+  same sample size (64 KB): all 6 tests pass on urandom, confirming the test
+  thresholds are correct.
+- At 8 KB, even `os.urandom` fails the poker test (chi_sq=25.15 vs threshold
+  25.0) — 8 KB is too small a sample for reliable testing. 64 KB is the
+  minimum recommended sample size for these tests.
+- Tests run: monobit, runs, chi-square (byte distribution), poker (4-bit
+  nibbles), serial (2-bit pairs), autocorrelation (lag=1).
+
+### Hardware test results (32/32 pass on sparky)
+
+All 32 hardware-dependent tests pass on the Pico (v1.6.3) via sparky:
+
+```
+tests/test_hsm.py ................. (17 tests)
+tests/test_hsm_aes_host.py ............... (15 tests)
+============================= 32 passed in 36.77s ==============================
+```
+
+Combined with 117 no-hardware tests: **149 total tests, all passing**
+(117 pass without hardware, 32 pass on hardware).
+
+### Client bug fixes
+
+Three bugs in `host/hsm_client.py` were found and fixed during hardware
+testing:
+
+1. **Fingerprint parsing** — `fingerprint()` returned the full suffix
+   including " STATUS" (added in v1.6.2 for the degraded-state indicator).
+   Fixed to parse only the 64-hex-char fingerprint via `.split()[0]`.
+
+2. **AES_CTR empty data** — `aes_ctr()` with empty data received
+   `"AES_OUT"` (no trailing space after strip) and failed the
+   `startswith("AES_OUT ")` check. Fixed to use `startswith("AES_OUT")`
+   and `or ""` for the unhexlify call.
+
+3. **Multi-line `_send()`** — `_send()` returned only the first response
+   line, but `TRNG` returns a multi-line status dump. Fixed to join all
+   non-echo lines with `\n`. `seed()` updated to parse only the first line.
+
+### Rate limiter test fixture
+
+Added an autouse fixture in `tests/conftest.py` that resets the rate limiter
+before each hardware test, preventing cross-test interference from the
+10-req/10s sliding window. Only activates when the board is present; uses
+the session-scoped `hsm` instance (no extra serial connection).
+
+### Methodology
+
+- **Data collection:** 16 × `SEED_STREAM 4096 256` calls via serial on sparky
+  (`/dev/ttyACM0`, 115200 baud), accumulated to 65,536 bytes.
+- **Analysis:** `host/nist_800_22.py` (6-test NIST SP 800-22 suite, pure
+  Python, no external deps). Validated against `os.urandom` at 8 KB and 64 KB.
+- **Hardware tests:** `pytest tests/test_hsm.py tests/test_hsm_aes_host.py`
+  on sparky with Pico at `/dev/ttyACM0`.
+- **Date:** 2026-08-16.

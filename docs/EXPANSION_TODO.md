@@ -2,10 +2,12 @@
 
 Ideas and future directions for the pico-hsm project.
 
-**Progress:** 11 of 20 items completed. All code-only items that can be done
-without the physical Pico are done. Remaining items require hardware access
-(DMA, entropy sources, secure element, core pinning, custom firmware, HID,
-WebUSB) or formal validation (NIST 800-90B).
+**Progress:** 13 of 20 items completed. All code-only items that can be done
+without the physical Pico are done. The native C module has been deployed and
+validated on hardware (NIST SP 800-22, 64 KB, all 6 tests pass). Remaining
+items require deeper hardware work (DMA, entropy sources, secure element,
+core pinning, custom firmware, HID, WebUSB) or formal validation
+(NIST 800-90B).
 
 See also: [Architecture](ARCHITECTURE.md), [Threat model](THREAT_MODEL.md).
 
@@ -115,9 +117,12 @@ See also: [Architecture](ARCHITECTURE.md), [Threat model](THREAT_MODEL.md).
 
 ## Testing / CI
 
-- [ ] **Test the native module on hardware.** After the Pico is physically
-  reset, copy `trng_native.mpy`, verify SEED speedup, and run the NIST
-  statistical suite on native-module output.
+- [x] **Test the native module on hardware.** Deployed `trng_native.mpy` to
+  the Pico (v1.6.3), verified SEED speedup (~7× via SEED_STREAM, ~327 bytes/s
+  vs ~47 bytes/s for single SEED), and ran the NIST SP 800-22 statistical
+  suite on 64 KB of native-module entropy: all 6 tests pass (monobit, runs,
+  chi-square byte, poker, serial, autocorrelation). Results validated
+  against `os.urandom` at the same sample size. Script: `host/nist_800_22.py`.
 - [x] **CI pipeline.** GitHub Actions runs pytest (skips without hardware)
   and lints C code with cppcheck (`.github/workflows/ci.yml`).
 - [x] **Cross-platform host client.** `hsm_client.py._detect_port()` now

@@ -136,9 +136,9 @@ class PicoHSM:
             time.sleep(0.05)
         text = r.decode(errors="replace").strip()
         lines = [l.strip() for l in text.split("\n") if l.strip()]
-        for line in lines:
-            if line != cmd and not line.startswith(">>>"):
-                return line
+        resp_lines = [l for l in lines if l != cmd and not l.startswith(">>>")]
+        if resp_lines:
+            return "\n".join(resp_lines)
         return text
 
     # -- protocol commands ------------------------------------------------
@@ -162,10 +162,11 @@ class PicoHSM:
         return resp
 
     def fingerprint(self):
-        """Return just the hex fingerprint string."""
+        """Return just the 64-hex-char fingerprint string."""
         resp = self.who()
         if "FINGERPRINT " in resp:
-            return resp.split("FINGERPRINT ", 1)[1].strip()
+            # WHO format: ... FINGERPRINT <hex64> STATUS [DEGRADED]
+            return resp.split("FINGERPRINT ", 1)[1].split()[0]
         return resp
 
     def challenge(self, msg):
@@ -185,8 +186,9 @@ class PicoHSM:
     def seed(self, nbytes):
         """Return *nbytes* of raw TRNG entropy (bytes, 1-256)."""
         resp = self._send("SEED " + str(nbytes))
-        if resp.startswith("SEED "):
-            return binascii.unhexlify(resp[5:].strip())
+        line = resp.split("\n", 1)[0] if "\n" in resp else resp
+        if line.startswith("SEED "):
+            return binascii.unhexlify(line[5:].strip())
         return resp
 
     def version(self):
@@ -236,8 +238,8 @@ class PicoHSM:
         if data:
             cmd += " " + data
         resp = self._send(cmd)
-        if resp.startswith("AES_OUT "):
-            return binascii.unhexlify(resp[8:].strip())
+        if resp.startswith("AES_OUT"):
+            return binascii.unhexlify(resp[8:].strip() or "")
         return resp
 
     def close(self):
