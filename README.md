@@ -52,6 +52,8 @@ used for the three things a normal Linux host *cannot* do:
 - [Verified results](#verified-results)
 - [Applications](#applications)
 - [Limitations & honest notes](#limitations--honest-notes)
+- [Architecture (diagrams)](docs/ARCHITECTURE.md)
+- [Threat model (formal)](docs/THREAT_MODEL.md)
 - [Roadmap & expansion TODO](#roadmap--expansion-todo)
 - [Changelog](#changelog)
 - [License](#license)
@@ -292,6 +294,8 @@ pico-hsm/
 │   ├── test_seed_stream.py  # 24 bulk SEED streaming tests (no hardware)
 │   └── test_hsm_aes.py       # mpremote script (runs on Pico, not pytest)
 ├── docs/
+│   ├── ARCHITECTURE.md     # system architecture (diagrams, pipeline, memory)
+│   ├── THREAT_MODEL.md     # formal threat model (adversaries, security claims)
 │   └── TEST_RESULTS.md
 ├── pytest.ini
 ├── requirements.txt
@@ -528,6 +532,10 @@ cannot offer:
 - The board must be physically present and powered; that is the feature, not a
   bug.
 
+For a formal breakdown of adversaries, security properties, and non-claims,
+see the [Threat model](docs/THREAT_MODEL.md) and
+[Architecture](docs/ARCHITECTURE.md) documents.
+
 ## Roadmap & expansion TODO
 
 Future improvements, roughly ordered by value-to-effort ratio:
@@ -563,6 +571,11 @@ Future improvements, roughly ordered by value-to-effort ratio:
 
 ### v1.6.3
 
+- **Architecture & threat model docs.** Added `docs/ARCHITECTURE.md`
+  (ASCII + Mermaid diagrams of the TRNG pipeline, dual-core design,
+  protocol stack, memory map) and `docs/THREAT_MODEL.md` (six adversary
+  tiers, security properties per feature, explicit non-claims, threat
+  matrix).
 - **Bulk SEED mode.** Added `SEED_STREAM <total> [<chunk_size>]` for
   high-throughput entropy retrieval. Returns up to 8192 bytes of raw TRNG
   output in chunks (default 64 bytes, configurable 1–256). Each chunk is

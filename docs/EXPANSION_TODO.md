@@ -118,8 +118,14 @@ Ideas and future directions for the pico-hsm project.
 
 ## Documentation
 
-- [ ] **Architecture diagram.** Add a visual showing the TRNG pipeline,
-  the dual-core design (core 0 = serial REPL, core 1 = watchdog), and the
-  native module integration point.
-- [ ] **Threat model document.** Formalize the security claims and
-  non-claims into a dedicated threat model document.
+- [x] **Architecture diagram.** Added `docs/ARCHITECTURE.md` with ASCII art
+  and Mermaid diagrams showing the TRNG pipeline, the dual-core design
+  (core 0 = serial REPL, core 1 = watchdog), the native module integration,
+  the serial protocol stack (including the encrypted transport layer),
+  the memory map, and the challenge-response data flow.
+- [x] **Threat model document.** Added `docs/THREAT_MODEL.md` formalizing
+  the security claims and non-claims: assets, six adversary tiers (A1–A6),
+  security properties per feature (volatile key, challenge-response,
+  encrypted transport, rate limiting, audit log, device identity, TRNG),
+  an explicit list of non-claims, a threat summary matrix, and
+  recommendations for users needing stronger security.
